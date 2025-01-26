@@ -6,6 +6,8 @@ import requests
 import re
 import time
 import json
+from firebase_config import initialize_firebase
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,15 +19,20 @@ def clean_url(url):
     """Clean URL by removing any unwanted characters like backticks and quotes"""
     return url.strip().rstrip('`\'"')
 
-def scrape_property_data(urls):
+def scrape_property_data(urls, company_url):
     """
-    Scrapes all data from a list of URLs, excluding the header and footer, and extracts unique image URLs.
-    Sends the content to OpenAI to filter out relevant property information.
-
-    :param urls: A list of URLs of the webpages to scrape.
-    :return: A dictionary with flattened property information including url and images.
+    Scrapes property data and stores it in Firebase.
+    
+    :param urls: A list of URLs of the webpages to scrape
+    :param company_url: The main company website URL
+    :return: A dictionary with flattened property information including url and images
     """
     results = []
+    
+    # Initialize Firebase
+    db = initialize_firebase()
+    if not db:
+        raise Exception("Failed to initialize Firebase")
     
     try:
         with sync_playwright() as p:
@@ -39,6 +46,7 @@ def scrape_property_data(urls):
                 except PlaywrightTimeoutError:
                     error_info = {
                         "url": url,
+                        "company_url": company_url,
                         "name": "",
                         "address": "",
                         "price": "",
@@ -50,6 +58,7 @@ def scrape_property_data(urls):
                 except Exception as e:
                     error_info = {
                         "url": url,
+                        "company_url": company_url,
                         "name": "",
                         "address": "",
                         "price": "",
@@ -151,14 +160,17 @@ def scrape_property_data(urls):
                 else:
                     relevant_images = []
 
-                # Create flattened property info with URL and images
+                # Create flattened property info with additional metadata
                 flattened_info = {
                     "url": url,
+                    "company_url": company_url,
                     "name": property_info.get("name") if property_info.get("name") else "Not Available",
                     "address": property_info.get("address") if property_info.get("address") else "Not Available",
                     "price": property_info.get("price") if property_info.get("price") else "Not Available",
                     "details": property_info.get("details") if property_info.get("details") else "Not Available",
-                    "images": relevant_images if relevant_images else []
+                    "images": relevant_images if relevant_images else [],
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
                 }
                 
                 # Handle case where property_info contains an error
@@ -170,6 +182,13 @@ def scrape_property_data(urls):
                         "details": property_info["error"]
                     })
                 
+                # Store in Firebase
+                try:
+                    # Create a new document with an auto-generated ID in the properties collection
+                    db.push('properties', flattened_info)
+                except Exception as e:
+                    print(f"Error storing property in Firebase: {e}")
+
                 results.append(flattened_info)
 
             browser.close()
@@ -177,6 +196,7 @@ def scrape_property_data(urls):
     except Exception as e:
         error_info = {
             "url": urls[0],
+            "company_url": company_url,
             "name": "",
             "address": "",
             "price": "",
