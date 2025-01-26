@@ -1,0 +1,659 @@
+ SystemMessage 
+You are a precise browser automation agent that interacts with websites through structured commands. Your role is to:
+1. Analyze the provided webpage elements and structure
+2. Plan a sequence of actions to accomplish the given task
+3. Respond with valid JSON containing your action sequence and state assessment
+
+Current date and time: 2025-01-26 16:23
+
+
+INPUT STRUCTURE:
+1. Current URL: The webpage you're currently on
+2. Available Tabs: List of open browser tabs
+3. Interactive Elements: List in the format:
+   index[:]<element_type>element_text</element_type>
+   - index: Numeric identifier for interaction
+   - element_type: HTML element type (button, input, etc.)
+   - element_text: Visible text or element description
+
+Example:
+33[:]<button>Submit Form</button>
+_[:] Non-interactive text
+
+
+Notes:
+- Only elements with numeric indexes are interactive
+- _[:] elements provide context but cannot be interacted with
+
+
+
+1. RESPONSE FORMAT: You must ALWAYS respond with valid JSON in this exact format:
+   {
+     "current_state": {
+       "evaluation_previous_goal": "Success|Failed|Unknown - Analyze the current elements and the image to check if the previous goals/actions are successful like intended by the task. Ignore the action result. The website is the ground truth. Also mention if something unexpected happened like new suggestions in an input field. Shortly state why/why not",
+       "memory": "Description of what has been done and what you need to remember until the end of the task",
+       "next_goal": "What needs to be done with the next actions"
+     },
+     "action": [
+       {
+         "one_action_name": {
+           // action-specific parameter
+         }
+       },
+       // ... more actions in sequence
+     ]
+   }
+
+2. ACTIONS: You can specify multiple actions in the list to be executed in sequence. But always specify only one action name per item.
+
+   Common action sequences:
+   - Form filling: [
+       {"input_text": {"index": 1, "text": "username"}},
+       {"input_text": {"index": 2, "text": "password"}},
+       {"click_element": {"index": 3}}
+     ]
+   - Navigation and extraction: [
+       {"open_new_tab": {}},
+       {"go_to_url": {"url": "https://example.com"}},
+       {"extract_page_content": {}}
+     ]
+
+
+3. ELEMENT INTERACTION:
+   - Only use indexes that exist in the provided element list
+   - Each element has a unique index number (e.g., "33[:]<button>")
+   - Elements marked with "_[:]" are non-interactive (for context only)
+
+4. NAVIGATION & ERROR HANDLING:
+   - If no suitable elements exist, use other functions to complete the task
+   - If stuck, try alternative approaches
+   - Handle popups/cookies by accepting or closing them
+   - Use scroll to find elements you are looking for
+
+5. TASK COMPLETION:
+   - Use the done action as the last action as soon as the task is complete
+   - Don't hallucinate actions
+   - If the task requires specific information - make sure to include everything in the done function. This is what the user will see.
+   - If you are running out of steps (current step), think about speeding it up, and ALWAYS use the done action as the last action.
+
+6. VISUAL CONTEXT:
+   - When an image is provided, use it to understand the page layout
+   - Bounding boxes with labels correspond to element indexes
+   - Each bounding box and its label have the same color
+   - Most often the label is inside the bounding box, on the top right
+   - Visual context helps verify element locations and relationships
+   - sometimes labels overlap, so use the context to verify the correct element
+
+7. Form filling:
+   - If you fill an input field and your action sequence is interrupted, most often a list with suggestions popped up under the field and you need to first select the right element from the suggestion list.
+
+8. ACTION SEQUENCING:
+   - Actions are executed in the order they appear in the list
+   - Each action should logically follow from the previous one
+   - If the page changes after an action, the sequence is interrupted and you get the new state.
+   - If content only disappears the sequence continues.
+   - Only provide the action sequence until you think the page will change.
+   - Try to be efficient, e.g. fill forms at once, or chain actions where nothing changes on the page like saving, extracting, checkboxes...
+   - only use multiple actions if it makes sense.
+
+
+   - use maximum 10 actions per sequence
+
+Functions:
+Complete task: 
+{done: {'text': {'type': 'string'}}}
+Search Google in the current tab: 
+{search_google: {'query': {'type': 'string'}}}
+Navigate to URL in the current tab: 
+{go_to_url: {'url': {'type': 'string'}}}
+Go back: 
+{go_back: {}}
+Click element: 
+{click_element: {'index': {'type': 'integer'}, 'xpath': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None}}}
+Input text into a input interactive element: 
+{input_text: {'index': {'type': 'integer'}, 'text': {'type': 'string'}, 'xpath': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None}}}
+Switch tab: 
+{switch_tab: {'page_id': {'type': 'integer'}}}
+Open url in new tab: 
+{open_tab: {'url': {'type': 'string'}}}
+Extract page content to get the pure text or markdown with links if include_links is set to true: 
+{extract_content: {'include_links': {'type': 'boolean'}}}
+Scroll down the page by pixel amount - if no amount is specified, scroll down one page: 
+{scroll_down: {'amount': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None}}}
+Scroll up the page by pixel amount - if no amount is specified, scroll up one page: 
+{scroll_up: {'amount': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None}}}
+Send strings of special keys like Backspace, Insert, PageDown, Delete, Enter, Shortcuts such as `Control+o`, `Control+Shift+T` are supported as well. This gets used in keyboard.press. Be aware of different operating systems and their shortcuts: 
+{send_keys: {'keys': {'type': 'string'}}}
+If you dont find something which you want to interact with, scroll to it: 
+{scroll_to_text: {'text': {'type': 'string'}}}
+Get all options from a native dropdown: 
+{get_dropdown_options: {'index': {'type': 'integer'}}}
+Select dropdown option for interactive element index by the text of the option you want to select: 
+{select_dropdown_option: {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}
+
+Remember: Your responses must be valid JSON matching the specified format. Each action in the sequence must be valid.
+
+ HumanMessage 
+Your ultimate task is: go to ishaanchamoli.com then to his github and tell me what his favourite quote is!. If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.
+
+ AIMessage 
+
+
+ ToolMessage 
+Browser started
+
+ AIMessage 
+
+
+ ToolMessage 
+
+
+ HumanMessage 
+Action result: 🔗  Navigated to https://ishaanchamoli.com
+
+ AIMessage 
+
+
+ ToolMessage 
+
+
+ HumanMessage 
+Action result: 🖱️  Clicked button with index 4:
+
+ HumanMessage 
+Current url: https://github.com/IshaanChamoli
+Available tabs:
+[TabInfo(page_id=0, url='https://ishaanchamoli.com/', title='Ishaan Chamoli'), TabInfo(page_id=1, url='https://github.com/IshaanChamoli', title='IshaanChamoli (Ishaan Chamoli) · GitHub')]
+Interactive elements from current page view:
+[Start of page]
+_[:]Skip to content
+_[:]Navigation Menu
+0[:]<a aria-label="Homepage"></a>
+1[:]<button type="button" aria-expanded="false">Product</button>
+2[:]<button type="button" aria-expanded="false">Solutions</button>
+3[:]<button type="button" aria-expanded="false">Resources</button>
+4[:]<button type="button" aria-expanded="false">Open Source</button>
+5[:]<button type="button" aria-expanded="false">Enterprise</button>
+6[:]<a >Pricing</a>
+7[:]<button type="button" aria-label="Search or jump to…" placeholder="Search or jump to..."></button>
+8[:]<a >Sign in</a>
+9[:]<a >Sign up</a>
+10[:]<a >Overview</a>
+11[:]<a >Repositories
+36</a>
+12[:]<a >Projects</a>
+13[:]<a >Packages</a>
+14[:]<a >Stars
+5</a>
+15[:]<a ></a>
+16[:]<img alt="View IshaanChamoli's full-sized avatar"></img>
+_[:]👋
+_[:]Ishaan Chamoli
+_[:]IshaanChamoli
+17[:]<a >Follow</a>
+_[:]I want to build for the developing world | CS @ UIUC
+18[:]<a >2
+followers</a>
+_[:]·
+19[:]<a >0
+following</a>
+_[:]Urbana-Champaign, Illinois
+20[:]<a >https://www.ishaanchamoli.com</a>
+21[:]<a >in/ishaanchamoli</a>
+22[:]<a >Achievements</a>
+23[:]<a ></a>
+24[:]<img alt="Achievement: YOLO"></img>
+25[:]<a ></a>
+26[:]<img alt="Achievement: Pull Shark"></img>
+_[:]Highlights
+_[:]Pro
+27[:]<button type="button">Block or Report</button>
+28[:]<a >IshaanChamoli</a>
+_[:]/
+_[:]README
+_[:].md
+_[:]👀 Hey! My name is Ishaan.
+29[:]<a aria-label="Permalink: 👀 Hey! My name is Ishaan."></a>
+_[:]I'm a Computer Science student at the University of Illinois Urbana-Champaign...
+_[:]I'm really excited about the future of technology, especially the role that startups (and
+30[:]<a >anti-startups</a>
+_[:]!) will play in shaping it. As part of that future, I can't wait to build for the developing world - to change education and the economy as we know it.
+_[:]“The people who are crazy enough to think they can change the world are the ones who do.”
+_[:]I once spent an hour pacing up and down my room, memorizing that entire speech by Steve Jobs. It's so cool!
+_[:]👨🏽‍🎓Here's what I'm currently learning:
+31[:]<a aria-label="Permalink: 👨🏽‍🎓Here's what I'm currently learning:"></a>
+_[:]ML + Deep Learning
+_[:]Full Stack Web and App Development
+_[:]Virtual Reality
+_[:]DSA for Competitive Programming
+_[:]Pinned
+_[:]Loading
+32[:]<a >VibeGPT</a>
+_[:]Public
+_[:]Chat with AI, Connect with Humans
+_[:]JavaScript
+33[:]<a >HackMIT</a>
+_[:]Public
+_[:]Forked from
+34[:]<a >kushalk173-sc/laughing-memory</a>
+_[:]TypeScript
+35[:]<a >realtime-agent-console</a>
+_[:]Public
+_[:]Voice AI Agent to choose and run multiple modular functions!
+_[:]JavaScript
+36[:]<a >saiprakashgorti/
+sdlc-accelerate</a>
+_[:]Public
+_[:]SDLC Accelerator transforms weeks of project planning into minutes by using AI to generate comprehensive project artifacts while preserving human expertise at every stage.
+_[:]JavaScript
+37[:]<a >1</a>
+38[:]<a >3resolutions</a>
+_[:]Public
+_[:]Guess my Top 3 New Year's Resolutions, based on Dall-E's hints!
+_[:]JavaScript
+39[:]<a >SelfDriving-AWholeWorld</a>
+_[:]Public
+_[:]JavaScript
+40[:]<table role="grid"></table>
+41[:]<td tabindex="0" role="gridcell"></td>
+42[:]<td tabindex="-1" role="gridcell"></td>
+43[:]<td tabindex="-1" role="gridcell"></td>
+44[:]<td tabindex="-1" role="gridcell"></td>
+45[:]<td tabindex="-1" role="gridcell"></td>
+46[:]<td tabindex="-1" role="gridcell"></td>
+47[:]<td tabindex="-1" role="gridcell"></td>
+48[:]<td tabindex="-1" role="gridcell"></td>
+49[:]<td tabindex="-1" role="gridcell"></td>
+50[:]<td tabindex="-1" role="gridcell"></td>
+51[:]<td tabindex="-1" role="gridcell"></td>
+52[:]<td tabindex="-1" role="gridcell"></td>
+53[:]<td tabindex="-1" role="gridcell"></td>
+54[:]<td tabindex="-1" role="gridcell"></td>
+55[:]<td tabindex="-1" role="gridcell"></td>
+56[:]<td tabindex="-1" role="gridcell"></td>
+57[:]<td tabindex="-1" role="gridcell"></td>
+58[:]<td tabindex="-1" role="gridcell"></td>
+59[:]<td tabindex="-1" role="gridcell"></td>
+60[:]<td tabindex="-1" role="gridcell"></td>
+61[:]<td tabindex="-1" role="gridcell"></td>
+62[:]<td tabindex="-1" role="gridcell"></td>
+63[:]<td tabindex="-1" role="gridcell"></td>
+64[:]<td tabindex="-1" role="gridcell"></td>
+65[:]<td tabindex="-1" role="gridcell"></td>
+66[:]<td tabindex="-1" role="gridcell"></td>
+67[:]<td tabindex="-1" role="gridcell"></td>
+68[:]<td tabindex="-1" role="gridcell"></td>
+69[:]<td tabindex="-1" role="gridcell"></td>
+70[:]<td tabindex="-1" role="gridcell"></td>
+71[:]<td tabindex="-1" role="gridcell"></td>
+72[:]<td tabindex="-1" role="gridcell"></td>
+73[:]<td tabindex="-1" role="gridcell"></td>
+74[:]<td tabindex="-1" role="gridcell"></td>
+75[:]<td tabindex="-1" role="gridcell"></td>
+76[:]<td tabindex="-1" role="gridcell"></td>
+77[:]<td tabindex="-1" role="gridcell"></td>
+78[:]<td tabindex="-1" role="gridcell"></td>
+79[:]<td tabindex="-1" role="gridcell"></td>
+80[:]<td tabindex="-1" role="gridcell"></td>
+81[:]<td tabindex="-1" role="gridcell"></td>
+82[:]<td tabindex="-1" role="gridcell"></td>
+83[:]<td tabindex="-1" role="gridcell"></td>
+84[:]<td tabindex="-1" role="gridcell"></td>
+85[:]<td tabindex="-1" role="gridcell"></td>
+86[:]<td tabindex="-1" role="gridcell"></td>
+87[:]<td tabindex="-1" role="gridcell"></td>
+88[:]<td tabindex="-1" role="gridcell"></td>
+89[:]<td tabindex="-1" role="gridcell"></td>
+90[:]<td tabindex="-1" role="gridcell"></td>
+91[:]<td tabindex="-1" role="gridcell"></td>
+92[:]<td tabindex="-1" role="gridcell"></td>
+93[:]<td tabindex="-1" role="gridcell"></td>
+94[:]<td tabindex="-1" role="gridcell"></td>
+95[:]<td tabindex="-1" role="gridcell"></td>
+96[:]<td tabindex="-1" role="gridcell"></td>
+97[:]<td tabindex="-1" role="gridcell"></td>
+98[:]<td tabindex="-1" role="gridcell"></td>
+99[:]<td tabindex="-1" role="gridcell"></td>
+100[:]<td tabindex="-1" role="gridcell"></td>
+101[:]<td tabindex="-1" role="gridcell"></td>
+102[:]<td tabindex="-1" role="gridcell"></td>
+103[:]<td tabindex="-1" role="gridcell"></td>
+104[:]<td tabindex="-1" role="gridcell"></td>
+105[:]<td tabindex="-1" role="gridcell"></td>
+106[:]<td tabindex="-1" role="gridcell"></td>
+107[:]<td tabindex="-1" role="gridcell"></td>
+108[:]<td tabindex="-1" role="gridcell"></td>
+109[:]<td tabindex="-1" role="gridcell"></td>
+110[:]<td tabindex="-1" role="gridcell"></td>
+111[:]<td tabindex="-1" role="gridcell"></td>
+112[:]<td tabindex="-1" role="gridcell"></td>
+113[:]<td tabindex="-1" role="gridcell"></td>
+114[:]<td tabindex="-1" role="gridcell"></td>
+115[:]<td tabindex="-1" role="gridcell"></td>
+116[:]<td tabindex="-1" role="gridcell"></td>
+117[:]<td tabindex="-1" role="gridcell"></td>
+118[:]<td tabindex="-1" role="gridcell"></td>
+119[:]<td tabindex="-1" role="gridcell"></td>
+120[:]<td tabindex="-1" role="gridcell"></td>
+121[:]<td tabindex="-1" role="gridcell"></td>
+122[:]<td tabindex="-1" role="gridcell"></td>
+123[:]<td tabindex="-1" role="gridcell"></td>
+124[:]<td tabindex="-1" role="gridcell"></td>
+125[:]<td tabindex="-1" role="gridcell"></td>
+126[:]<td tabindex="-1" role="gridcell"></td>
+127[:]<td tabindex="-1" role="gridcell"></td>
+128[:]<td tabindex="-1" role="gridcell"></td>
+129[:]<td tabindex="-1" role="gridcell"></td>
+130[:]<td tabindex="-1" role="gridcell"></td>
+131[:]<td tabindex="-1" role="gridcell"></td>
+132[:]<td tabindex="-1" role="gridcell"></td>
+133[:]<td tabindex="-1" role="gridcell"></td>
+134[:]<td tabindex="-1" role="gridcell"></td>
+135[:]<td tabindex="-1" role="gridcell"></td>
+136[:]<td tabindex="-1" role="gridcell"></td>
+137[:]<td tabindex="-1" role="gridcell"></td>
+138[:]<td tabindex="-1" role="gridcell"></td>
+139[:]<td tabindex="-1" role="gridcell"></td>
+140[:]<td tabindex="-1" role="gridcell"></td>
+141[:]<td tabindex="-1" role="gridcell"></td>
+142[:]<td tabindex="-1" role="gridcell"></td>
+143[:]<td tabindex="-1" role="gridcell"></td>
+144[:]<td tabindex="-1" role="gridcell"></td>
+145[:]<td tabindex="-1" role="gridcell"></td>
+146[:]<td tabindex="-1" role="gridcell"></td>
+147[:]<td tabindex="-1" role="gridcell"></td>
+148[:]<td tabindex="-1" role="gridcell"></td>
+149[:]<td tabindex="-1" role="gridcell"></td>
+150[:]<td tabindex="-1" role="gridcell"></td>
+151[:]<td tabindex="-1" role="gridcell"></td>
+152[:]<td tabindex="-1" role="gridcell"></td>
+153[:]<td tabindex="-1" role="gridcell"></td>
+154[:]<td tabindex="-1" role="gridcell"></td>
+155[:]<td tabindex="-1" role="gridcell"></td>
+156[:]<td tabindex="-1" role="gridcell"></td>
+157[:]<td tabindex="-1" role="gridcell"></td>
+158[:]<td tabindex="-1" role="gridcell"></td>
+159[:]<td tabindex="-1" role="gridcell"></td>
+160[:]<td tabindex="-1" role="gridcell"></td>
+161[:]<td tabindex="-1" role="gridcell"></td>
+162[:]<td tabindex="-1" role="gridcell"></td>
+163[:]<td tabindex="-1" role="gridcell"></td>
+164[:]<td tabindex="-1" role="gridcell"></td>
+165[:]<td tabindex="-1" role="gridcell"></td>
+166[:]<td tabindex="-1" role="gridcell"></td>
+167[:]<td tabindex="-1" role="gridcell"></td>
+168[:]<td tabindex="-1" role="gridcell"></td>
+169[:]<td tabindex="-1" role="gridcell"></td>
+170[:]<td tabindex="-1" role="gridcell"></td>
+171[:]<td tabindex="-1" role="gridcell"></td>
+172[:]<td tabindex="-1" role="gridcell"></td>
+173[:]<td tabindex="-1" role="gridcell"></td>
+174[:]<td tabindex="-1" role="gridcell"></td>
+175[:]<td tabindex="-1" role="gridcell"></td>
+176[:]<td tabindex="-1" role="gridcell"></td>
+177[:]<td tabindex="-1" role="gridcell"></td>
+178[:]<td tabindex="-1" role="gridcell"></td>
+179[:]<td tabindex="-1" role="gridcell"></td>
+180[:]<td tabindex="-1" role="gridcell"></td>
+181[:]<td tabindex="-1" role="gridcell"></td>
+182[:]<td tabindex="-1" role="gridcell"></td>
+183[:]<td tabindex="-1" role="gridcell"></td>
+184[:]<td tabindex="-1" role="gridcell"></td>
+185[:]<td tabindex="-1" role="gridcell"></td>
+186[:]<td tabindex="-1" role="gridcell"></td>
+187[:]<td tabindex="-1" role="gridcell"></td>
+188[:]<td tabindex="-1" role="gridcell"></td>
+189[:]<td tabindex="-1" role="gridcell"></td>
+190[:]<td tabindex="-1" role="gridcell"></td>
+191[:]<td tabindex="-1" role="gridcell"></td>
+192[:]<td tabindex="-1" role="gridcell"></td>
+193[:]<td tabindex="-1" role="gridcell"></td>
+194[:]<td tabindex="-1" role="gridcell"></td>
+195[:]<td tabindex="-1" role="gridcell"></td>
+196[:]<td tabindex="-1" role="gridcell"></td>
+197[:]<td tabindex="-1" role="gridcell"></td>
+198[:]<td tabindex="-1" role="gridcell"></td>
+199[:]<td tabindex="-1" role="gridcell"></td>
+200[:]<td tabindex="-1" role="gridcell"></td>
+201[:]<td tabindex="-1" role="gridcell"></td>
+202[:]<td tabindex="-1" role="gridcell"></td>
+203[:]<td tabindex="-1" role="gridcell"></td>
+204[:]<td tabindex="-1" role="gridcell"></td>
+205[:]<td tabindex="-1" role="gridcell"></td>
+206[:]<td tabindex="-1" role="gridcell"></td>
+207[:]<td tabindex="-1" role="gridcell"></td>
+208[:]<td tabindex="-1" role="gridcell"></td>
+209[:]<td tabindex="-1" role="gridcell"></td>
+210[:]<td tabindex="-1" role="gridcell"></td>
+211[:]<td tabindex="-1" role="gridcell"></td>
+212[:]<td tabindex="-1" role="gridcell"></td>
+213[:]<td tabindex="-1" role="gridcell"></td>
+214[:]<td tabindex="-1" role="gridcell"></td>
+215[:]<td tabindex="-1" role="gridcell"></td>
+216[:]<td tabindex="-1" role="gridcell"></td>
+217[:]<td tabindex="-1" role="gridcell"></td>
+218[:]<td tabindex="-1" role="gridcell"></td>
+219[:]<td tabindex="-1" role="gridcell"></td>
+220[:]<td tabindex="-1" role="gridcell"></td>
+221[:]<td tabindex="-1" role="gridcell"></td>
+222[:]<td tabindex="-1" role="gridcell"></td>
+223[:]<td tabindex="-1" role="gridcell"></td>
+224[:]<td tabindex="-1" role="gridcell"></td>
+225[:]<td tabindex="-1" role="gridcell"></td>
+226[:]<td tabindex="-1" role="gridcell"></td>
+227[:]<td tabindex="-1" role="gridcell"></td>
+228[:]<td tabindex="-1" role="gridcell"></td>
+229[:]<td tabindex="-1" role="gridcell"></td>
+230[:]<td tabindex="-1" role="gridcell"></td>
+231[:]<td tabindex="-1" role="gridcell"></td>
+232[:]<td tabindex="-1" role="gridcell"></td>
+233[:]<td tabindex="-1" role="gridcell"></td>
+234[:]<td tabindex="-1" role="gridcell"></td>
+235[:]<td tabindex="-1" role="gridcell"></td>
+236[:]<td tabindex="-1" role="gridcell"></td>
+237[:]<td tabindex="-1" role="gridcell"></td>
+238[:]<td tabindex="-1" role="gridcell"></td>
+239[:]<td tabindex="-1" role="gridcell"></td>
+240[:]<td tabindex="-1" role="gridcell"></td>
+241[:]<td tabindex="-1" role="gridcell"></td>
+242[:]<td tabindex="-1" role="gridcell"></td>
+243[:]<td tabindex="-1" role="gridcell"></td>
+244[:]<td tabindex="-1" role="gridcell"></td>
+245[:]<td tabindex="-1" role="gridcell"></td>
+246[:]<td tabindex="-1" role="gridcell"></td>
+247[:]<td tabindex="-1" role="gridcell"></td>
+248[:]<td tabindex="-1" role="gridcell"></td>
+249[:]<td tabindex="-1" role="gridcell"></td>
+250[:]<td tabindex="-1" role="gridcell"></td>
+251[:]<td tabindex="-1" role="gridcell"></td>
+252[:]<td tabindex="-1" role="gridcell"></td>
+253[:]<td tabindex="-1" role="gridcell"></td>
+254[:]<td tabindex="-1" role="gridcell"></td>
+255[:]<td tabindex="-1" role="gridcell"></td>
+256[:]<td tabindex="-1" role="gridcell"></td>
+257[:]<td tabindex="-1" role="gridcell"></td>
+258[:]<td tabindex="-1" role="gridcell"></td>
+259[:]<td tabindex="-1" role="gridcell"></td>
+260[:]<td tabindex="-1" role="gridcell"></td>
+261[:]<td tabindex="-1" role="gridcell"></td>
+262[:]<td tabindex="-1" role="gridcell"></td>
+263[:]<td tabindex="-1" role="gridcell"></td>
+264[:]<td tabindex="-1" role="gridcell"></td>
+265[:]<td tabindex="-1" role="gridcell"></td>
+266[:]<td tabindex="-1" role="gridcell"></td>
+267[:]<td tabindex="-1" role="gridcell"></td>
+268[:]<td tabindex="-1" role="gridcell"></td>
+269[:]<td tabindex="-1" role="gridcell"></td>
+270[:]<td tabindex="-1" role="gridcell"></td>
+271[:]<td tabindex="-1" role="gridcell"></td>
+272[:]<td tabindex="-1" role="gridcell"></td>
+273[:]<td tabindex="-1" role="gridcell"></td>
+274[:]<td tabindex="-1" role="gridcell"></td>
+275[:]<td tabindex="-1" role="gridcell"></td>
+276[:]<td tabindex="-1" role="gridcell"></td>
+277[:]<td tabindex="-1" role="gridcell"></td>
+278[:]<td tabindex="-1" role="gridcell"></td>
+279[:]<td tabindex="-1" role="gridcell"></td>
+280[:]<td tabindex="-1" role="gridcell"></td>
+281[:]<td tabindex="-1" role="gridcell"></td>
+282[:]<td tabindex="-1" role="gridcell"></td>
+283[:]<td tabindex="-1" role="gridcell"></td>
+284[:]<td tabindex="-1" role="gridcell"></td>
+285[:]<td tabindex="-1" role="gridcell"></td>
+286[:]<td tabindex="-1" role="gridcell"></td>
+287[:]<td tabindex="-1" role="gridcell"></td>
+288[:]<td tabindex="-1" role="gridcell"></td>
+289[:]<td tabindex="-1" role="gridcell"></td>
+290[:]<td tabindex="-1" role="gridcell"></td>
+291[:]<td tabindex="-1" role="gridcell"></td>
+292[:]<td tabindex="-1" role="gridcell"></td>
+293[:]<td tabindex="-1" role="gridcell"></td>
+294[:]<td tabindex="-1" role="gridcell"></td>
+295[:]<td tabindex="-1" role="gridcell"></td>
+296[:]<td tabindex="-1" role="gridcell"></td>
+297[:]<td tabindex="-1" role="gridcell"></td>
+298[:]<td tabindex="-1" role="gridcell"></td>
+299[:]<td tabindex="-1" role="gridcell"></td>
+300[:]<td tabindex="-1" role="gridcell"></td>
+301[:]<td tabindex="-1" role="gridcell"></td>
+302[:]<td tabindex="-1" role="gridcell"></td>
+303[:]<td tabindex="-1" role="gridcell"></td>
+304[:]<td tabindex="-1" role="gridcell"></td>
+305[:]<td tabindex="-1" role="gridcell"></td>
+306[:]<td tabindex="-1" role="gridcell"></td>
+307[:]<td tabindex="-1" role="gridcell"></td>
+308[:]<td tabindex="-1" role="gridcell"></td>
+309[:]<td tabindex="-1" role="gridcell"></td>
+310[:]<td tabindex="-1" role="gridcell"></td>
+311[:]<td tabindex="-1" role="gridcell"></td>
+312[:]<td tabindex="-1" role="gridcell"></td>
+313[:]<td tabindex="-1" role="gridcell"></td>
+314[:]<td tabindex="-1" role="gridcell"></td>
+315[:]<td tabindex="-1" role="gridcell"></td>
+316[:]<td tabindex="-1" role="gridcell"></td>
+317[:]<td tabindex="-1" role="gridcell"></td>
+318[:]<td tabindex="-1" role="gridcell"></td>
+319[:]<td tabindex="-1" role="gridcell"></td>
+320[:]<td tabindex="-1" role="gridcell"></td>
+321[:]<td tabindex="-1" role="gridcell"></td>
+322[:]<td tabindex="-1" role="gridcell"></td>
+323[:]<td tabindex="-1" role="gridcell"></td>
+324[:]<td tabindex="-1" role="gridcell"></td>
+325[:]<td tabindex="-1" role="gridcell"></td>
+326[:]<td tabindex="-1" role="gridcell"></td>
+327[:]<td tabindex="-1" role="gridcell"></td>
+328[:]<td tabindex="-1" role="gridcell"></td>
+329[:]<td tabindex="-1" role="gridcell"></td>
+330[:]<td tabindex="-1" role="gridcell"></td>
+331[:]<td tabindex="-1" role="gridcell"></td>
+332[:]<td tabindex="-1" role="gridcell"></td>
+333[:]<td tabindex="-1" role="gridcell"></td>
+334[:]<td tabindex="-1" role="gridcell"></td>
+335[:]<td tabindex="-1" role="gridcell"></td>
+336[:]<td tabindex="-1" role="gridcell"></td>
+337[:]<td tabindex="-1" role="gridcell"></td>
+338[:]<td tabindex="-1" role="gridcell"></td>
+339[:]<td tabindex="-1" role="gridcell"></td>
+340[:]<td tabindex="-1" role="gridcell"></td>
+341[:]<td tabindex="-1" role="gridcell"></td>
+342[:]<td tabindex="-1" role="gridcell"></td>
+343[:]<td tabindex="-1" role="gridcell"></td>
+344[:]<td tabindex="-1" role="gridcell"></td>
+345[:]<td tabindex="-1" role="gridcell"></td>
+346[:]<td tabindex="-1" role="gridcell"></td>
+347[:]<td tabindex="-1" role="gridcell"></td>
+348[:]<td tabindex="-1" role="gridcell"></td>
+349[:]<td tabindex="-1" role="gridcell"></td>
+350[:]<td tabindex="-1" role="gridcell"></td>
+351[:]<td tabindex="-1" role="gridcell"></td>
+352[:]<td tabindex="-1" role="gridcell"></td>
+353[:]<td tabindex="-1" role="gridcell"></td>
+354[:]<td tabindex="-1" role="gridcell"></td>
+355[:]<td tabindex="-1" role="gridcell"></td>
+356[:]<td tabindex="-1" role="gridcell"></td>
+357[:]<td tabindex="-1" role="gridcell"></td>
+358[:]<td tabindex="-1" role="gridcell"></td>
+359[:]<td tabindex="-1" role="gridcell"></td>
+360[:]<td tabindex="-1" role="gridcell"></td>
+361[:]<td tabindex="-1" role="gridcell"></td>
+362[:]<td tabindex="-1" role="gridcell"></td>
+363[:]<td tabindex="-1" role="gridcell"></td>
+364[:]<td tabindex="-1" role="gridcell"></td>
+365[:]<td tabindex="-1" role="gridcell"></td>
+366[:]<td tabindex="-1" role="gridcell"></td>
+367[:]<td tabindex="-1" role="gridcell"></td>
+368[:]<td tabindex="-1" role="gridcell"></td>
+369[:]<td tabindex="-1" role="gridcell"></td>
+370[:]<td tabindex="-1" role="gridcell"></td>
+371[:]<td tabindex="-1" role="gridcell"></td>
+372[:]<td tabindex="-1" role="gridcell"></td>
+373[:]<td tabindex="-1" role="gridcell"></td>
+374[:]<td tabindex="-1" role="gridcell"></td>
+375[:]<td tabindex="-1" role="gridcell"></td>
+376[:]<td tabindex="-1" role="gridcell"></td>
+377[:]<td tabindex="-1" role="gridcell"></td>
+378[:]<td tabindex="-1" role="gridcell"></td>
+379[:]<td tabindex="-1" role="gridcell"></td>
+380[:]<td tabindex="-1" role="gridcell"></td>
+381[:]<td tabindex="-1" role="gridcell"></td>
+382[:]<td tabindex="-1" role="gridcell"></td>
+383[:]<td tabindex="-1" role="gridcell"></td>
+384[:]<td tabindex="-1" role="gridcell"></td>
+385[:]<td tabindex="-1" role="gridcell"></td>
+386[:]<td tabindex="-1" role="gridcell"></td>
+387[:]<td tabindex="-1" role="gridcell"></td>
+388[:]<td tabindex="-1" role="gridcell"></td>
+389[:]<td tabindex="-1" role="gridcell"></td>
+390[:]<td tabindex="-1" role="gridcell"></td>
+391[:]<td tabindex="-1" role="gridcell"></td>
+392[:]<td tabindex="-1" role="gridcell"></td>
+393[:]<td tabindex="-1" role="gridcell"></td>
+394[:]<td tabindex="-1" role="gridcell"></td>
+395[:]<td tabindex="-1" role="gridcell"></td>
+396[:]<td tabindex="-1" role="gridcell"></td>
+397[:]<td tabindex="-1" role="gridcell"></td>
+398[:]<td tabindex="-1" role="gridcell"></td>
+399[:]<td tabindex="-1" role="gridcell"></td>
+400[:]<td tabindex="-1" role="gridcell"></td>
+401[:]<td tabindex="-1" role="gridcell"></td>
+402[:]<td tabindex="-1" role="gridcell"></td>
+403[:]<td tabindex="-1" role="gridcell"></td>
+404[:]<td tabindex="-1" role="gridcell"></td>
+405[:]<td tabindex="-1" role="gridcell"></td>
+406[:]<a ></a>
+407[:]<a aria-label="Contribution activity in 2025"></a>
+408[:]<a aria-label="Contribution activity in 2024"></a>
+409[:]<a aria-label="Contribution activity in 2023"></a>
+410[:]<span tabindex="0"></span>
+411[:]<details ></details>
+412[:]<summary role="button"></summary>
+413[:]<a ></a>
+414[:]<a ></a>
+415[:]<a ></a>
+416[:]<a ></a>
+417[:]<a ></a>
+418[:]<a ></a>
+419[:]<a ></a>
+420[:]<a ></a>
+421[:]<a ></a>
+422[:]<details ></details>
+423[:]<summary role="button"></summary>
+424[:]<a ></a>
+425[:]<a ></a>
+... 934 pixels below - scroll or extract content to see more ...
+
+ RESPONSE
+{
+  "current_state": {
+    "evaluation_previous_goal": "Success - Successfully navigated to Ishaan's GitHub page.",
+    "memory": "",
+    "next_goal": "Extract Ishaan's favourite quote"
+  },
+  "action": [
+    {
+      "extract_content": {
+        "include_links": false
+      }
+    }
+  ]
+}
