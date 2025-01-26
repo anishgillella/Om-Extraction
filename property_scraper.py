@@ -12,8 +12,9 @@ from datetime import datetime
 # Load environment variables from .env file
 load_dotenv()
 
-# Get the OpenRouter API key from the environment
+# Get API keys from environment
 openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+browserbase_api_key = os.getenv('BROWSERBASE_API_KEY')
 
 def clean_url(url):
     """Clean URL by removing any unwanted characters like backticks and quotes"""
@@ -21,7 +22,7 @@ def clean_url(url):
 
 def scrape_property_data(urls, company_url):
     """
-    Scrapes property data and stores it in Firebase.
+    Scrapes property data and stores it in Firebase using Browserbase for browser automation.
     
     :param urls: A list of URLs of the webpages to scrape
     :param company_url: The main company website URL
@@ -35,11 +36,17 @@ def scrape_property_data(urls, company_url):
         raise Exception("Failed to initialize Firebase")
     
     try:
-        with sync_playwright() as p:
-            # Launch the browser with HTTP/2 disabled
-            browser = p.chromium.launch(headless=True, args=['--disable-http2'])
+        with sync_playwright() as playwright:
+            # Connect to Browserbase with proxy enabled for better scraping
+            browser = playwright.chromium.connect_over_cdp(
+                f"wss://connect.browserbase.com?apiKey={browserbase_api_key}&enableProxy=true"
+            )
+            
+            # Create a new context
+            context = browser.new_context()
+            
             for url in urls:
-                page = browser.new_page()
+                page = context.new_page()
                 
                 try:
                     page.goto(url, timeout=20000)  # Set a timeout of 20 seconds
@@ -184,13 +191,14 @@ def scrape_property_data(urls, company_url):
                 
                 # Store in Firebase
                 try:
-                    # Create a new document with an auto-generated ID in the properties collection
                     db.push('properties', flattened_info)
                 except Exception as e:
                     print(f"Error storing property in Firebase: {e}")
 
                 results.append(flattened_info)
 
+            # Make sure to close everything properly
+            context.close()
             browser.close()
 
     except Exception as e:
@@ -212,5 +220,5 @@ def scrape_property_data(urls, company_url):
 #     "https://tx-cre.com/100-lupita-circle-del-rio-tx-78840-for-sale-or-for-lease/",
 #     "https://tx-cre.com/1-chaparral-hill-drive-for-sale/"
 # ]
-# results = scrape_property_data(urls)
+# results = scrape_property_data(urls, "https://tx-cre.com")
 # print(json.dumps(results, indent=2))

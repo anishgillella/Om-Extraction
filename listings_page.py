@@ -1,26 +1,35 @@
 import os
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 import requests
 import re
+from playwright.sync_api import sync_playwright
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Get the OpenRouter API key from the environment
+# Get API keys from environment
 openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+browserbase_api_key = os.getenv('BROWSERBASE_API_KEY')
 
 def listings_page(url):
     """
-    Opens a webpage using Playwright in a headless browser, extracts all URLs with their link text,
+    Opens a webpage using Browserbase's headless browser, extracts all URLs with their link text,
     and uses OpenRouter to determine the top 3 URLs most likely to be the main listings page.
 
     :param url: The URL of the webpage to open.
     :return: A list of the top 3 URLs most likely to be the main listings page.
     """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    with sync_playwright() as playwright:
+        # Connect to Browserbase instead of launching local browser
+        browser = playwright.chromium.connect_over_cdp(
+            f"wss://connect.browserbase.com?apiKey={browserbase_api_key}&enableProxy=true"
+        )
+
+        # Create a new context and page
+        context = browser.new_context()
+        page = context.new_page()
+        
+        # Navigate to URL
         page.goto(url)
         
         # Extract all URLs and their corresponding link text
@@ -32,6 +41,9 @@ def listings_page(url):
         # Create a dictionary with link text as keys and URLs as values
         link_dict = {link['text']: link['href'] for link in links if link['text']}
         
+        # Make sure to close everything properly
+        page.close()
+        context.close()
         browser.close()
         
         # Use OpenRouter to determine the top 3 URLs
@@ -58,6 +70,7 @@ def listings_page(url):
         return top_urls
 
 # Example usage:
-# listing_urls = listings_page("https://www.linc.realty/")
-# print(listing_urls) 
+# if __name__ == "__main__":
+#     listing_urls = listings_page("https://www.linc.realty/")
+#     print(listing_urls) 
 
