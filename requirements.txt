@@ -1,6 +1,0 @@
-browser-use
-playwright
-python-dotenv
-langchain-openai
-aiohttp
-asyncio 
