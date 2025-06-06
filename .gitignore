@@ -1,18 +1,34 @@
 # Environment variables
 .env
-.env.*
-!.env.example
 
-# Python
+# Downloads folder (contains downloaded PDFs)
+downloads/
+
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
-.venv/
 
-# IDE
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
 .vscode/
 .idea/
 
-# Firebase
-firebase-serviceAccount.json
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Browser profiles
+browseruse/
+
+# API keys and sensitive data
+*_config.py
+firebase_config.py 
