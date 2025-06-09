@@ -28,14 +28,21 @@ async def download_pdf_direct(page: Page) -> ActionResult:
     """
     try:
         current_url = page.url
+        print(f"🔍 Attempting to download PDF from: {current_url}")
         
-        # Check if current page is a PDF
-        if not current_url.endswith('.pdf'):
-            return ActionResult(extracted_content="❌ Current page is not a PDF URL")
+        # More flexible PDF detection - check URL or content type
+        is_pdf_url = (current_url.endswith('.pdf') or 
+                     'pdf' in current_url.lower() or
+                     '/uploads/' in current_url)
+        
+        if not is_pdf_url:
+            print(f"❌ URL doesn't appear to be a PDF: {current_url}")
+            return ActionResult(extracted_content=f"❌ Current page URL doesn't appear to be a PDF: {current_url}")
         
         # Set up downloads directory
         downloads_dir = Path("/Users/anishgillella/Desktop/Stuff/Theus/TheusAI/downloads")
         downloads_dir.mkdir(exist_ok=True, parents=True)
+        print(f"📁 Downloads directory: {downloads_dir}")
         
         # Extract filename from URL
         filename = current_url.split('/')[-1]
@@ -45,27 +52,77 @@ async def download_pdf_direct(page: Page) -> ActionResult:
         # Clean filename
         clean_filename = filename.replace('%20', '-').replace(' ', '-')
         download_path = downloads_dir / clean_filename
+        print(f"💾 Target file path: {download_path}")
         
-        # Download using aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(current_url) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    
-                    # Save the PDF
-                    with open(download_path, 'wb') as f:
-                        f.write(content)
-                    
-                    file_size_kb = len(content) // 1024
-                    
-                    # Add to global tracking (we'll access this through the page's context)
-                    # Note: We'll need to track this differently since we don't have direct access to the downloader instance
-                    
+        # Download using Playwright's browser context (maintains session/cookies)
+        print("🌐 Starting download using browser context...")
+        
+        try:
+            # Use the browser's request context to maintain session
+            context = page.context
+            response = await context.request.get(current_url)
+            
+            print(f"📊 Response status: {response.status}")
+            print(f"📋 Response headers: {response.headers}")
+            
+            if response.status == 200:
+                content = await response.body()
+                content_length = len(content)
+                print(f"📥 Downloaded {content_length} bytes")
+                
+                if content_length == 0:
+                    return ActionResult(extracted_content="❌ Downloaded content is empty")
+                
+                # Verify it's actually PDF content
+                if not content.startswith(b'%PDF'):
+                    print(f"⚠️ Content doesn't start with PDF header. First 50 bytes: {content[:50]}")
+                    return ActionResult(extracted_content="❌ Downloaded content is not a valid PDF")
+                
+                # Save the PDF
+                print(f"💾 Writing {content_length} bytes to: {download_path}")
+                with open(download_path, 'wb') as f:
+                    f.write(content)
+                
+                # Verify file was written
+                if download_path.exists():
+                    file_size_kb = download_path.stat().st_size // 1024
+                    print(f"✅ File successfully saved: {download_path} ({file_size_kb} KB)")
                     return ActionResult(extracted_content=f"✅ Downloaded PDF: {clean_filename} ({file_size_kb} KB) to {download_path}")
                 else:
-                    return ActionResult(extracted_content=f"❌ Failed to download PDF. HTTP status: {response.status}")
+                    return ActionResult(extracted_content=f"❌ File was not created at: {download_path}")
+            else:
+                error_text = await response.text()
+                print(f"❌ HTTP Error {response.status}: {error_text[:200]}")
+                return ActionResult(extracted_content=f"❌ Failed to download PDF. HTTP status: {response.status}")
+                
+        except Exception as request_error:
+            print(f"❌ Browser request failed: {request_error}")
+            # Fallback to direct browser navigation method
+            try:
+                print("🔄 Trying fallback: direct browser download...")
+                await page.goto(current_url)
+                await page.wait_for_load_state('networkidle')
+                
+                # Try to trigger browser's built-in download
+                await page.keyboard.press('Control+s')  # Save page
+                await page.wait_for_timeout(3000)
+                
+                # Check if file was downloaded
+                if download_path.exists():
+                    file_size_kb = download_path.stat().st_size // 1024
+                    print(f"✅ File downloaded via browser: {download_path} ({file_size_kb} KB)")
+                    return ActionResult(extracted_content=f"✅ Downloaded PDF: {clean_filename} ({file_size_kb} KB) to {download_path}")
+                else:
+                    return ActionResult(extracted_content="❌ Browser download fallback failed")
                     
+            except Exception as fallback_error:
+                print(f"❌ Fallback method also failed: {fallback_error}")
+                return ActionResult(extracted_content=f"❌ All download methods failed: {str(fallback_error)}")
+
     except Exception as e:
+        print(f"❌ Exception in download_pdf_direct: {str(e)}")
+        import traceback
+        print(f"📍 Traceback: {traceback.format_exc()}")
         return ActionResult(extracted_content=f"❌ Error downloading PDF: {str(e)}")
 
 # Generic dropdown handler that works for any dropdown type
@@ -372,7 +429,7 @@ class OMFlyerDownloader:
             # Create agent with download-focused task
             agent = Agent(
                 task=f"""Navigate to {url} and download PDF files by:
-                1. Looking for download buttons or links like "VIEW PACKAGE", "Download Brochure", etc.
+                1. Look for download buttons or links like "VIEW PACKAGE", "Download Brochure", etc. while scrolling, use the 'scroll_down' action with `pages=0.5`
                 2. IMPORTANT: If you need to scroll, use the 'scroll_down' action with `pages=0.5` to scroll half a page at a time to avoid missing the button.
                 3. Clicking the download button. This will either:
                    a) DIRECT DOWNLOAD: File downloads immediately to downloads folder, OR
