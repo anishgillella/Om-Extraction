@@ -73,6 +73,79 @@ async def download_pdf_direct(page: Page) -> ActionResult:
                 if content_length == 0:
                     return ActionResult(extracted_content="❌ Downloaded content is empty")
                 
+                # Check if it's HTML content (tracking/redirect page)
+                content_start = content[:100].decode('utf-8', errors='ignore').lower()
+                if '<html' in content_start or '<head' in content_start or '<script' in content_start:
+                    print(f"⚠️ Got HTML instead of PDF - likely a tracking/redirect page")
+                    print(f"🔄 Trying alternative download methods...")
+                    
+                    # Method 1: Try using browser's built-in download
+                    try:
+                        await page.keyboard.press('Control+s')  # Save page
+                        await page.wait_for_timeout(3000)
+                        
+                        # Check if file was downloaded
+                        potential_files = list(downloads_dir.glob("*.pdf"))
+                        if potential_files:
+                            latest_file = max(potential_files, key=lambda x: x.stat().st_mtime)
+                            if latest_file.stat().st_size > 10000:  # Reasonable PDF size
+                                file_size_kb = latest_file.stat().st_size // 1024
+                                print(f"✅ File downloaded via browser save: {latest_file} ({file_size_kb} KB)")
+                                return ActionResult(extracted_content=f"✅ Downloaded PDF: {latest_file.name} ({file_size_kb} KB) to {latest_file}")
+                    except Exception as save_error:
+                        print(f"⚠️ Browser save method failed: {save_error}")
+                    
+                    # Method 2: Look for direct PDF links in the HTML
+                    try:
+                        html_content = content.decode('utf-8', errors='ignore')
+                        import re
+                        
+                        # Look for PDF URLs in the HTML
+                        pdf_url_patterns = [
+                            r'href=["\']([^"\']*\.pdf[^"\']*)["\']',
+                            r'src=["\']([^"\']*\.pdf[^"\']*)["\']',
+                            r'url\(["\']?([^"\']*\.pdf[^"\']*)["\']?\)',
+                            r'location\.href\s*=\s*["\']([^"\']*\.pdf[^"\']*)["\']',
+                        ]
+                        
+                        for pattern in pdf_url_patterns:
+                            matches = re.findall(pattern, html_content, re.IGNORECASE)
+                            for match in matches:
+                                if match and match.endswith('.pdf'):
+                                    print(f"🔗 Found potential PDF URL in HTML: {match}")
+                                    
+                                    # Make URL absolute if needed
+                                    if match.startswith('http'):
+                                        pdf_url = match
+                                    else:
+                                        from urllib.parse import urljoin
+                                        pdf_url = urljoin(current_url, match)
+                                    
+                                    # Try downloading the direct PDF URL
+                                    try:
+                                        pdf_response = await context.request.get(pdf_url)
+                                        if pdf_response.status == 200:
+                                            pdf_content = await pdf_response.body()
+                                            if pdf_content.startswith(b'%PDF'):
+                                                # Save the PDF
+                                                pdf_filename = pdf_url.split('/')[-1]
+                                                clean_pdf_filename = pdf_filename.replace('%20', '-').replace(' ', '-')
+                                                pdf_download_path = downloads_dir / clean_pdf_filename
+                                                
+                                                with open(pdf_download_path, 'wb') as f:
+                                                    f.write(pdf_content)
+                                                
+                                                file_size_kb = len(pdf_content) // 1024
+                                                print(f"✅ Downloaded PDF from extracted URL: {pdf_download_path} ({file_size_kb} KB)")
+                                                return ActionResult(extracted_content=f"✅ Downloaded PDF: {clean_pdf_filename} ({file_size_kb} KB) to {pdf_download_path}")
+                                    except Exception as direct_error:
+                                        print(f"⚠️ Failed to download from extracted URL {pdf_url}: {direct_error}")
+                                        continue
+                    except Exception as html_parse_error:
+                        print(f"⚠️ Failed to parse HTML for PDF URLs: {html_parse_error}")
+                    
+                    return ActionResult(extracted_content="❌ Got HTML redirect page instead of PDF - could not find direct PDF URL")
+                
                 # Verify it's actually PDF content
                 if not content.startswith(b'%PDF'):
                     print(f"⚠️ Content doesn't start with PDF header. First 50 bytes: {content[:50]}")
@@ -332,6 +405,150 @@ async def check_terms_checkbox(page: Page) -> ActionResult:
     except Exception as e:
         return ActionResult(extracted_content=f"❌ Error checking checkbox: {str(e)}")
 
+# Custom action to handle iframe forms (especially for Knipp Wolf sites)
+@controller.action('Handle iframe forms and downloads')
+async def handle_iframe_forms(page: Page) -> ActionResult:
+    """
+    Detect and handle forms within iframes, common on sites like Knipp Wolf
+    """
+    try:
+        print("🔍 Scanning for iframe forms...")
+        
+        # Wait for page to load completely
+        await page.wait_for_load_state('networkidle')
+        await page.wait_for_timeout(3000)
+        
+        # Get all iframes on the page
+        iframes = await page.locator('iframe').all()
+        print(f"📋 Found {len(iframes)} iframes on page")
+        
+        for i, iframe in enumerate(iframes):
+            try:
+                print(f"🔍 Checking iframe {i+1}/{len(iframes)}")
+                
+                # Get iframe source
+                iframe_src = await iframe.get_attribute('src')
+                print(f"📎 Iframe src: {iframe_src}")
+                
+                # Wait for iframe to load
+                await page.wait_for_timeout(2000)
+                
+                # Get iframe content frame
+                frame = await iframe.content_frame()
+                if not frame:
+                    print(f"❌ Could not access iframe {i+1} content")
+                    continue
+                
+                # Wait for iframe content to load
+                await frame.wait_for_load_state('networkidle', timeout=10000)
+                
+                # Look for download forms in iframe
+                download_buttons = await frame.locator('button, input[type="submit"], a').all()
+                for button in download_buttons:
+                    button_text = await button.text_content() or ""
+                    button_value = await button.get_attribute('value') or ""
+                    
+                    # Check if this looks like a download button
+                    download_keywords = ['download', 'get', 'view', 'package', 'brochure', 'om', 'flyer', 'memorandum']
+                    button_content = (button_text + " " + button_value).lower()
+                    
+                    if any(keyword in button_content for keyword in download_keywords):
+                        print(f"🎯 Found potential download button in iframe: '{button_text or button_value}'")
+                        
+                        # Fill out form if present
+                        await fill_iframe_form(frame)
+                        
+                        # Click the download button
+                        await button.click()
+                        print(f"✅ Clicked download button in iframe")
+                        
+                        # Wait for potential download or new tab
+                        await page.wait_for_timeout(3000)
+                        
+                        return ActionResult(extracted_content=f"✅ Successfully interacted with iframe form and clicked download button")
+                
+            except Exception as iframe_error:
+                print(f"⚠️ Error processing iframe {i+1}: {iframe_error}")
+                continue
+        
+        return ActionResult(extracted_content="❌ No downloadable forms found in iframes")
+        
+    except Exception as e:
+        print(f"❌ Error handling iframe forms: {e}")
+        return ActionResult(extracted_content=f"❌ Error handling iframe forms: {e}")
+
+async def fill_iframe_form(frame):
+    """Helper function to fill forms within iframes"""
+    try:
+        print("📝 Filling iframe form...")
+        
+        # Common form fields to fill
+        form_data = {
+            "name": "John Doe",
+            "firstname": "John", 
+            "first_name": "John",
+            "lastname": "Doe",
+            "last_name": "Doe",
+            "email": "johndoe@email.com",
+            "phone": "555-123-4567",
+            "company": "Real Estate Investments LLC",
+            "organization": "Real Estate Investments LLC"
+        }
+        
+        # Fill text inputs
+        for field_name, value in form_data.items():
+            selectors = [
+                f'input[name*="{field_name}"]',
+                f'input[id*="{field_name}"]',
+                f'input[placeholder*="{field_name}"]'
+            ]
+            
+            for selector in selectors:
+                try:
+                    field = frame.locator(selector).first
+                    if await field.count() > 0:
+                        await field.fill(value)
+                        print(f"✅ Filled {field_name}: {value}")
+                        break
+                except:
+                    continue
+        
+        # Handle dropdowns in iframe
+        try:
+            # Look for contact type dropdown
+            contact_selects = await frame.locator('select').all()
+            for select in contact_selects:
+                select_name = await select.get_attribute('name') or ""
+                if 'contact' in select_name.lower() or 'type' in select_name.lower():
+                    try:
+                        await select.select_option(label="Broker")
+                        print("✅ Selected 'Broker' from contact type dropdown in iframe")
+                        break
+                    except:
+                        try:
+                            await select.select_option(label="Principal")
+                            print("✅ Selected 'Principal' from contact type dropdown in iframe")
+                            break
+                        except:
+                            continue
+        except Exception as dropdown_error:
+            print(f"⚠️ Could not handle dropdowns in iframe: {dropdown_error}")
+        
+        # Check terms checkbox if present
+        try:
+            checkboxes = await frame.locator('input[type="checkbox"]').all()
+            for checkbox in checkboxes:
+                checkbox_label = await checkbox.get_attribute('name') or ""
+                if 'terms' in checkbox_label.lower() or 'agree' in checkbox_label.lower():
+                    await checkbox.check()
+                    print("✅ Checked terms checkbox in iframe")
+                    break
+        except Exception as checkbox_error:
+            print(f"⚠️ Could not handle checkboxes in iframe: {checkbox_error}")
+            
+    except Exception as e:
+        print(f"❌ Error filling iframe form: {e}")
+
 class OMFlyerDownloader:
     def __init__(self, openai_api_key=None):
         """Initialize the OM/Flyer downloader with Browser Use agent"""
@@ -350,12 +567,33 @@ class OMFlyerDownloader:
             api_key=self.api_key
         )
         
-        # Configure browser profile (remove invalid download parameters)
+        # Configure browser profile with iframe support
         self.browser_profile = BrowserProfile(
             headless=False,
             viewport={"width": 1280, "height": 1024},
             wait_for_network_idle_page_load_time=3.0,
             highlight_elements=True,
+            # Enhanced iframe support for sites like Knipp Wolf
+            disable_security=True,  # Allow cross-origin iframe access
+            disable_web_security=True,  # Disable web security for iframe content
+            allowed_domains=[
+                # Standard domains
+                "*",
+                # Knipp Wolf iframe domains
+                "*.knippwolf-netlease.com",
+                "knippwolf-netlease.com",
+                # Add other common iframe domains
+                "*.marcusmillichap.com",
+                "*.cegadvisors.com",
+                "*.netlease.com",
+                "*.duwestrealty.com",
+                "*.levyretail.com",
+                "*.theblueoxgroup.com",
+                "*.apex-cre.com",
+                "*.tag-industrial.com",
+                "*.netleaseadvisorygroup.com",
+                "*.valuenetlease.com"
+            ]
         )
         
         # Configure browser session (remove invalid parameters)
@@ -429,16 +667,32 @@ class OMFlyerDownloader:
             # Create agent with download-focused task
             agent = Agent(
                 task=f"""Navigate to {url} and download PDF files by:
-                1. Look for download buttons or links like "VIEW PACKAGE", "Download Brochure", etc. while scrolling, use the 'scroll_down' action with `pages=0.5`
-                2. IMPORTANT: If you need to scroll, use the 'scroll_down' action with `pages=0.5` to scroll half a page at a time to avoid missing the button.
-                3. Clicking the download button. This will either:
+                1. Look for download buttons or links like "VIEW PACKAGE", "Download Brochure", "Offering Memorandum", etc.
+                2. If no text-based download buttons are found, look for DOWNLOAD ICONS such as:
+                   - Downward arrow symbols (↓, ⬇, ▼)
+                   - Download icons (usually arrow pointing down)
+                   - Document icons with download indicators
+                   - Any clickable icons that typically represent downloads
+                3. **CRITICAL SCROLLING RULE**: If you don't immediately see download buttons/links on the current viewport:
+                   - ALWAYS use 'scroll_down' action with `pages=0.5` to scroll down half a page
+                   - Keep scrolling until you find download elements
+                   - Do NOT get stuck analyzing the same elements repeatedly
+                   - If you see the same elements for 2+ consecutive steps, SCROLL DOWN
+                4. Clicking the download button. This will either:
                    a) DIRECT DOWNLOAD: File downloads immediately to downloads folder, OR
                    b) NEW TAB PDF: PDF opens in a new tab that needs to be downloaded
+                   c) IFRAME FORM: Form appears within an iframe (common on Knipp Wolf sites)
                 
-                FOR FORMS (if a form appears):
+                FOR IFRAME FORMS (Knipp Wolf, Marcus & Millichap subdomain sites):
+                   - If you suspect the page uses iframes for forms, call the 'handle_iframe_forms' action
+                   - This will automatically detect iframes, fill forms, and click download buttons within them
+                   - Common iframe sites: *.knippwolf-netlease.com, subdomain.marcusmillichap.com
+                
+                FOR REGULAR FORMS (if a form appears on main page):
                    - Fill it out with professional data:
                      * Name: John Doe
-                     * Email: johndoe@email.com
+                     * Email: anish@theus.ai (for any login/signup)
+                     * Password: Gillellaanish@123 (for any login/signup)
                      * Phone: 555-123-4567
                      * Company: Real Estate Investments LLC
                      * WHEN YOU ENCOUNTER A DROPDOWN: Call the 'select_dropdown_option_generic' action with parameters:
@@ -451,9 +705,15 @@ class OMFlyerDownloader:
                    - After successfully submitting the form, click the NEW download button that appears.
                    - IMMEDIATELY after clicking the final download button, use the 'done' action - DO NOT wait or check for confirmations.
                 
+                FOR SITES WITH COMPLEX/JAVASCRIPT-HEAVY ELEMENTS:
+                   - If normal clicking fails but you can see download elements, use the 'force_click_download_element' action
+                   - This handles sites where elements are visually present but not properly indexed
+                
                 FOR DIRECT PDF LINKS (if PDF opens in new tab):
                    - If a PDF opens directly in a new tab, switch to that tab and call 'download_pdf_direct' action.
                    - IMMEDIATELY after the download action, use the 'done' action.
+                
+                ANTI-LOOP RULE: If you find yourself evaluating the same page content for 3+ consecutive steps without taking action, immediately scroll down or try a different approach.
                 
                 CRITICAL: Once you click any final download button (like "Download Marketing Package", "Download PDF", etc.), IMMEDIATELY use the 'done' action. DO NOT wait, DO NOT check for confirmations, DO NOT click multiple times.
                 
