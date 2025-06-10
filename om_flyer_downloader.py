@@ -226,9 +226,12 @@ async def download_pdf_direct(page: Page) -> ActionResult:
                         file_size_kb = download_path.stat().st_size // 1024
                         print(f"✅ File successfully saved via enhanced request: {download_path} ({file_size_kb} KB)")
                         return ActionResult(extracted_content=f"✅ DOWNLOAD COMPLETE! Successfully downloaded PDF: {clean_filename} ({file_size_kb} KB). Task finished - use 'done' action immediately.")
+                    else:
+                        error_preview = content[:200].decode('utf-8', errors='ignore')
+                        print(f"❌ Enhanced request failed. Content preview: {error_preview}")
                 else:
                     error_preview = content[:200].decode('utf-8', errors='ignore')
-                    print(f"❌ Enhanced request failed. Content preview: {error_preview}")
+                    print(f"❌ Content is not a PDF. Content preview: {error_preview}")
             else:
                 error_text = await response.text()
                 print(f"❌ Enhanced request HTTP Error {response.status}: {error_text[:200]}")
@@ -813,7 +816,7 @@ After scanning the page, provide ONLY a single number representing the count of 
                 
                 2. **EXAMPLE KEYWORDS** (but not limited to these - use your intelligence):
                    - "Flyer", "Package", "OM", "Brochure", "Download", "View"
-                   - "Marketing", "Investment", "Property", "Memorandum", "Summary", "Documents"
+                   - "Marketing", "Investment", "Property", "Memorandum", "Summary", "Documents", "Attachments", "PIB"
                    - Look for ANY words that suggest downloadable property marketing materials
                 
                 3. **SMART SCROLLING STRATEGY**:
