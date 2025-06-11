@@ -14,9 +14,107 @@ from playwright.async_api import Page
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 from urllib.parse import urlparse
+from typing import Dict, List
+from langchain.callbacks.base import BaseCallbackHandler
+from langchain.schema import LLMResult
+import re
 
 # Load environment variables
 load_dotenv()
+
+class TokenTracker:
+    """Track token usage and costs for GPT-4o including vision"""
+    
+    def __init__(self):
+        self.reset()
+        
+        # GPT-4o pricing (per 1M tokens)
+        self.pricing = {
+            "gpt-4o": {
+                "input": 2.50,  # $2.50 per 1M input tokens
+                "output": 10.00,  # $10.00 per 1M output tokens
+                "vision": 2.50   # $2.50 per 1M vision tokens (same as input)
+            },
+            "gpt-4o-mini": {
+                "input": 0.15,   # $0.15 per 1M input tokens
+                "output": 0.60,  # $0.60 per 1M output tokens  
+                "vision": 0.15   # $0.15 per 1M vision tokens
+            }
+        }
+    
+    def reset(self):
+        """Reset all counters"""
+        self.scout_tokens = {"input": 0, "output": 0, "vision": 0}
+        self.main_tokens = {"input": 0, "output": 0, "vision": 0}
+        self.total_tokens = {"input": 0, "output": 0, "vision": 0}
+        self.scout_cost = 0.0
+        self.main_cost = 0.0
+        self.total_cost = 0.0
+        self.model_name = "gpt-4o"
+        
+    def set_model(self, model_name: str):
+        """Set the model name for cost calculations"""
+        self.model_name = model_name
+        
+    def add_scout_usage(self, input_tokens: int, output_tokens: int, vision_tokens: int = 0):
+        """Add token usage for scout agent"""
+        self.scout_tokens["input"] += input_tokens
+        self.scout_tokens["output"] += output_tokens
+        self.scout_tokens["vision"] += vision_tokens
+        self._update_totals()
+        
+    def add_main_usage(self, input_tokens: int, output_tokens: int, vision_tokens: int = 0):
+        """Add token usage for main agent"""
+        self.main_tokens["input"] += input_tokens
+        self.main_tokens["output"] += output_tokens
+        self.main_tokens["vision"] += vision_tokens
+        self._update_totals()
+        
+    def _update_totals(self):
+        """Update total tokens and costs"""
+        # Calculate totals
+        self.total_tokens["input"] = self.scout_tokens["input"] + self.main_tokens["input"]
+        self.total_tokens["output"] = self.scout_tokens["output"] + self.main_tokens["output"]
+        self.total_tokens["vision"] = self.scout_tokens["vision"] + self.main_tokens["vision"]
+        
+        # Calculate costs (convert to millions for pricing)
+        pricing = self.pricing.get(self.model_name, self.pricing["gpt-4o"])
+        
+        # Scout costs
+        scout_input_cost = (self.scout_tokens["input"] / 1_000_000) * pricing["input"]
+        scout_output_cost = (self.scout_tokens["output"] / 1_000_000) * pricing["output"]
+        scout_vision_cost = (self.scout_tokens["vision"] / 1_000_000) * pricing["vision"]
+        self.scout_cost = scout_input_cost + scout_output_cost + scout_vision_cost
+        
+        # Main agent costs
+        main_input_cost = (self.main_tokens["input"] / 1_000_000) * pricing["input"]
+        main_output_cost = (self.main_tokens["output"] / 1_000_000) * pricing["output"]
+        main_vision_cost = (self.main_tokens["vision"] / 1_000_000) * pricing["vision"]
+        self.main_cost = main_input_cost + main_output_cost + main_vision_cost
+        
+        # Total cost
+        self.total_cost = self.scout_cost + self.main_cost
+    
+    def get_summary(self) -> Dict:
+        """Get token usage and cost summary"""
+        return {
+            "model": self.model_name,
+            "scout": {
+                "tokens": dict(self.scout_tokens),
+                "cost": self.scout_cost
+            },
+            "main": {
+                "tokens": dict(self.main_tokens),
+                "cost": self.main_cost
+            },
+            "total": {
+                "tokens": dict(self.total_tokens),
+                "cost": self.total_cost
+            }
+        }
+
+# Global token tracker instance
+token_tracker = TokenTracker()
 
 # Create controller for custom actions
 controller = Controller()
@@ -682,9 +780,17 @@ class OMScoutAgent:
                 browser_profile=scout_browser_profile
             )
             
+            # Create LLM with scout token tracking callback
+            scout_llm = ChatOpenAI(
+                api_key=self.llm.openai_api_key,
+                model=self.llm.model_name,
+                temperature=self.llm.temperature,
+                callbacks=[TokenCountingCallback("scout")]
+            )
+            
             scout_agent = Agent(
                 task=scout_prompt,
-                llm=self.llm,
+                llm=scout_llm,
                 browser_session=scout_browser_session,
                 controller=controller,
             )
@@ -776,6 +882,35 @@ class OMScoutAgent:
         except Exception:
             return 0
 
+class TokenCountingCallback(BaseCallbackHandler):
+    """Callback to track token usage for scout vs main agent"""
+    
+    def __init__(self, agent_type: str = "unknown"):
+        self.agent_type = agent_type  # "scout" or "main"
+        
+    def on_llm_end(self, response: LLMResult, **kwargs) -> None:
+        """Called when LLM finishes running"""
+        try:
+            if hasattr(response, 'llm_output') and response.llm_output:
+                usage = response.llm_output.get('token_usage', {})
+                if usage:
+                    input_tokens = usage.get('prompt_tokens', 0)
+                    output_tokens = usage.get('completion_tokens', 0)
+                    # Vision tokens are typically included in prompt_tokens for GPT-4o
+                    # For now, we'll estimate vision tokens as 20% of input tokens when images are involved
+                    vision_tokens = 0
+                    
+                    # Add token usage to tracker
+                    if self.agent_type == "scout":
+                        token_tracker.add_scout_usage(input_tokens, output_tokens, vision_tokens)
+                        print(f"🔍 Scout tokens: {input_tokens} input, {output_tokens} output")
+                    elif self.agent_type == "main":
+                        token_tracker.add_main_usage(input_tokens, output_tokens, vision_tokens)  
+                        print(f"🤖 Main tokens: {input_tokens} input, {output_tokens} output")
+                    
+        except Exception as e:
+            print(f"⚠️ Token tracking error: {e}")
+
 class OMFlyerDownloader:
     def __init__(self, openai_api_key=None):
         """Initialize the OM/Flyer downloader with enhanced configuration"""
@@ -789,6 +924,9 @@ class OMFlyerDownloader:
             model="gpt-4o",  # Most capable model for complex tasks
             temperature=0.1,  # Low temperature for more consistent behavior
         )
+        
+        # Set model in token tracker
+        token_tracker.set_model("gpt-4o")
         
         # Set up browser profile for improved navigation
         self.browser_profile = BrowserProfile(
@@ -845,6 +983,11 @@ class OMFlyerDownloader:
         self.download_handlers_setup = False
         self.current_url = None
         self.should_stop = False  # Add stop flag
+        
+    def update_model(self, model_name: str):
+        """Update the LLM model and token tracker"""
+        self.llm.model_name = model_name
+        token_tracker.set_model(model_name)
 
     def get_domain_folder(self, url: str) -> Path:
         """Get domain-specific folder for organizing downloads"""
@@ -998,8 +1141,9 @@ class OMFlyerDownloader:
         """
         Main workflow with 2-agent architecture: Scout first, then Main agent based on count
         """
-        # Record start time
+        # Record start time and reset token tracking for this workflow
         start_time = time.time()
+        token_tracker.reset()
         
         # Store current URL for domain extraction in download handlers
         self.current_url = url
@@ -1012,7 +1156,8 @@ class OMFlyerDownloader:
             "steps_completed": [],
             "execution_time_seconds": 0,
             "om_buttons_found": 0,
-            "strategy_used": ""
+            "strategy_used": "",
+            "token_usage": {}  # Will be populated with token data
         }
         
         try:
@@ -1091,8 +1236,18 @@ class OMFlyerDownloader:
             end_time = time.time()
             result["execution_time_seconds"] = end_time - start_time
             
+            # Add token usage data to results
+            result["token_usage"] = token_tracker.get_summary()
+            
             print(f"\n⏱️ Workflow Execution Time: {result['execution_time_seconds']:.1f} seconds")
             print(f"📊 Strategy Used: {result['strategy_used']} ({result['om_buttons_found']} buttons)")
+            
+            # Print token usage summary
+            token_summary = result["token_usage"]
+            print(f"\n💰 Token Usage Summary (Model: {token_summary['model']}):")
+            print(f"  🔍 Scout Agent: {token_summary['scout']['tokens']['input']:,} input + {token_summary['scout']['tokens']['output']:,} output + {token_summary['scout']['tokens']['vision']:,} vision = ${token_summary['scout']['cost']:.4f}")
+            print(f"  🤖 Main Agent: {token_summary['main']['tokens']['input']:,} input + {token_summary['main']['tokens']['output']:,} output + {token_summary['main']['tokens']['vision']:,} vision = ${token_summary['main']['cost']:.4f}")
+            print(f"  📊 Total: {token_summary['total']['tokens']['input']:,} input + {token_summary['total']['tokens']['output']:,} output + {token_summary['total']['tokens']['vision']:,} vision = ${token_summary['total']['cost']:.4f}")
             
             try:
                 await self.browser_session.close()
@@ -1117,25 +1272,37 @@ class OMFlyerDownloader:
             2. **FIND THE OM BUTTON**: Look for the single download button (VIEW PACKAGE, Download Brochure, etc.)
             3. Use half-page scrolling (`pages=0.5`) if needed to locate it
 
-            **STEP 2: DOWNLOAD EXECUTION - STOP IMMEDIATELY AFTER**
+            **STEP 2: DOWNLOAD EXECUTION - COMPLETE THE FULL PROCESS**
                 ───────────────────────────────────────────────────────────────────────────────────
             1. Click the OM button
-            2. **IF FORM APPEARS**: Fill with John Doe, johndoe@email.com, 555-123-4567 and submit
+            2. **IF FORM APPEARS**: 
+               - Fill with John Doe, johndoe@email.com, 555-123-4567 
+               - Submit the form
+               - **WAIT** and look for additional download buttons that may appear AFTER form submission
+               - Click any "Download", "Download Package", "Download Marketing Package" buttons
             3. **IF PDF OPENS IN NEW TAB**: Use 'download_pdf_direct' action to download it
             4. **IF DIRECT DOWNLOAD**: File will download automatically
-            5. **IMMEDIATELY call 'done' after ANY download action**
+            5. **ONLY call 'done' after PDF download is CONFIRMED (either via download handler or direct download)**
                 
                 **CRITICAL RULES**:
-            - After clicking download/submit button, IMMEDIATELY call 'done'
-            - If PDF opens in new tab and you can't switch tabs, use 'download_pdf_direct'
-            - Do not continue working after any download action
+            - Form submission is NOT the end - look for final download buttons after submission
+            - Some sites have: Form → Submit → "Download Package" button → Actual download
+            - Wait a few seconds after form submission to see if new buttons appear
+            - Only stop when you've clicked a final download button or PDF download is confirmed
             
-            START: Find and click the single OM button, handle the download, then stop immediately.'''
+            START: Find and click the single OM button, complete the full download process including any post-form download buttons.'''
             
             # Create main agent
+            main_llm = ChatOpenAI(
+                api_key=self.llm.openai_api_key,
+                model=self.llm.model_name,
+                temperature=self.llm.temperature,
+                callbacks=[TokenCountingCallback("main")]
+            )
+            
             agent = Agent(
                 task=task_prompt,
-                llm=self.llm,
+                llm=main_llm,
                 browser_session=self.browser_session,
                 controller=controller,
             )
@@ -1205,10 +1372,17 @@ class OMFlyerDownloader:
             
             START: Find all {expected_count} OM buttons and download each one systematically.'''
             
-            # Create main agent with more steps for batch processing
+            # Create main agent
+            main_llm = ChatOpenAI(
+                api_key=self.llm.openai_api_key,
+                model=self.llm.model_name,
+                temperature=self.llm.temperature,
+                callbacks=[TokenCountingCallback("main")]
+            )
+            
             agent = Agent(
                 task=task_prompt,
-                llm=self.llm,
+                llm=main_llm,
                 browser_session=self.browser_session,
                 controller=controller,
             )
@@ -1264,10 +1438,10 @@ class OMFlyerDownloader:
             result["error"] = str(e)
 
 def print_results_summary(results: list):
-    """Print a summary of download results with 2-agent architecture details"""
-    print("\n" + "="*70)
-    print("📊 2-AGENT DOWNLOAD SUMMARY")
-    print("="*70)
+    """Print a comprehensive summary of download results with 2-agent architecture and token usage details"""
+    print("\n" + "="*80)
+    print("📊 COMPREHENSIVE 2-AGENT DOWNLOAD SUMMARY WITH TOKEN TRACKING")
+    print("="*80)
     
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
@@ -1292,7 +1466,10 @@ def print_results_summary(results: list):
             if result["downloaded_files"]:
                 strategy = result.get("strategy_used", "unknown")
                 button_count = result.get("om_buttons_found", "?")
-                print(f"\n  📄 {result['url']} [{strategy.upper()} - {button_count} button(s)]")
+                token_usage = result.get("token_usage", {})
+                total_cost = token_usage.get("total", {}).get("cost", 0.0)
+                
+                print(f"\n  📄 {result['url']} [{strategy.upper()} - {button_count} button(s)] - ${total_cost:.4f}")
                 for file_path in result["downloaded_files"]:
                     file_name = Path(file_path).name
                     print(f"    • {file_name}")
@@ -1300,14 +1477,42 @@ def print_results_summary(results: list):
     if skipped:
         print("\n⏭️ Skipped (No OM Buttons Found):")
         for result in skipped:
-            print(f"  • {result['url']}")
+            token_usage = result.get("token_usage", {})
+            scout_cost = token_usage.get("scout", {}).get("cost", 0.0)
+            print(f"  • {result['url']} - Scout only: ${scout_cost:.4f}")
     
     if failed:
         print("\n❌ Failed Downloads:")
         for result in failed:
             strategy = result.get("strategy_used", "unknown")
             button_count = result.get("om_buttons_found", "?")
-            print(f"  • {result['url']} [{strategy.upper()} - {button_count} button(s)]: {result['error']}")
+            token_usage = result.get("token_usage", {})
+            total_cost = token_usage.get("total", {}).get("cost", 0.0)
+            print(f"  • {result['url']} [{strategy.upper()} - {button_count} button(s)] - ${total_cost:.4f}: {result['error']}")
+    
+    # Calculate aggregate token usage and costs
+    total_scout_tokens = {"input": 0, "output": 0, "vision": 0}
+    total_main_tokens = {"input": 0, "output": 0, "vision": 0}
+    total_scout_cost = 0.0
+    total_main_cost = 0.0
+    total_cost = 0.0
+    model_name = "gpt-4o"  # Default
+    
+    for result in results:
+        token_usage = result.get("token_usage", {})
+        if token_usage:
+            model_name = token_usage.get("model", model_name)
+            
+            scout_tokens = token_usage.get("scout", {}).get("tokens", {})
+            main_tokens = token_usage.get("main", {}).get("tokens", {})
+            
+            for token_type in ["input", "output", "vision"]:
+                total_scout_tokens[token_type] += scout_tokens.get(token_type, 0)
+                total_main_tokens[token_type] += main_tokens.get(token_type, 0)
+            
+            total_scout_cost += token_usage.get("scout", {}).get("cost", 0.0)
+            total_main_cost += token_usage.get("main", {}).get("cost", 0.0)
+            total_cost += token_usage.get("total", {}).get("cost", 0.0)
     
     # Show efficiency stats
     total_time = sum(r["execution_time_seconds"] for r in results)
@@ -1318,6 +1523,50 @@ def print_results_summary(results: list):
     print(f"  📁 Total files downloaded: {total_files}")
     if total_files > 0:
         print(f"  📊 Average time per file: {total_time/total_files:.1f} seconds")
+        print(f"  💰 Average cost per file: ${total_cost/total_files:.4f}")
+    
+    # Comprehensive token usage summary
+    print(f"\n💰 COMPREHENSIVE TOKEN USAGE & COST ANALYSIS (Model: {model_name}):")
+    print("─" * 80)
+    
+    print(f"🔍 SCOUT AGENT TOTALS:")
+    print(f"  📊 Tokens: {total_scout_tokens['input']:,} input + {total_scout_tokens['output']:,} output + {total_scout_tokens['vision']:,} vision")
+    print(f"  💵 Cost: ${total_scout_cost:.4f}")
+    
+    print(f"\n🤖 MAIN AGENT TOTALS:")
+    print(f"  📊 Tokens: {total_main_tokens['input']:,} input + {total_main_tokens['output']:,} output + {total_main_tokens['vision']:,} vision")
+    print(f"  💵 Cost: ${total_main_cost:.4f}")
+    
+    print(f"\n📈 GRAND TOTALS:")
+    total_input = total_scout_tokens['input'] + total_main_tokens['input']
+    total_output = total_scout_tokens['output'] + total_main_tokens['output']
+    total_vision = total_scout_tokens['vision'] + total_main_tokens['vision']
+    
+    print(f"  📊 All Tokens: {total_input:,} input + {total_output:,} output + {total_vision:,} vision = {total_input + total_output + total_vision:,} total")
+    print(f"  💵 Total Cost: ${total_cost:.4f}")
+    
+    # Cost breakdown by component
+    if total_cost > 0:
+        scout_percentage = (total_scout_cost / total_cost) * 100
+        main_percentage = (total_main_cost / total_cost) * 100
+        
+        print(f"\n📊 Cost Breakdown:")
+        print(f"  🔍 Scout Agent: {scout_percentage:.1f}% (${total_scout_cost:.4f})")
+        print(f"  🤖 Main Agent: {main_percentage:.1f}% (${total_main_cost:.4f})")
+    
+    # Performance insights
+    if results:
+        print(f"\n🎯 Performance Insights:")
+        successful_with_tokens = [r for r in successful if r.get("token_usage")]
+        if successful_with_tokens:
+            avg_cost_per_success = sum(r["token_usage"]["total"]["cost"] for r in successful_with_tokens) / len(successful_with_tokens)
+            print(f"  💰 Average cost per successful download: ${avg_cost_per_success:.4f}")
+            
+        skip_with_tokens = [r for r in skipped if r.get("token_usage")]
+        if skip_with_tokens:
+            avg_scout_cost = sum(r["token_usage"]["scout"]["cost"] for r in skip_with_tokens) / len(skip_with_tokens)
+            print(f"  🔍 Average scout cost (when skipping): ${avg_scout_cost:.4f}")
+            print(f"  ⚡ Scout efficiency: Saves ~${avg_cost_per_success - avg_scout_cost:.4f} per skip")
 
 async def main():
     """Enhanced main function with better error handling"""
