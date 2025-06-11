@@ -799,6 +799,7 @@ class OMFlyerDownloader:
             storage_state=None,
             headless=False,  # Visible for debugging and GIF recording
             browser_type="chromium",
+            viewport_expansion=-1,  # SEE ENTIRE PAGE AT ONCE (same as scout agent)
             extra_chromium_args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
