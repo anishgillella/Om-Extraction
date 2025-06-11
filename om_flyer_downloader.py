@@ -611,6 +611,171 @@ async def fill_iframe_form(frame):
     except Exception as e:
         print(f"❌ Error filling iframe form: {e}")
 
+class OMScoutAgent:
+    """Lightweight scout agent to count OM/download buttons on webpages"""
+    
+    def __init__(self, llm, browser_session):
+        self.llm = llm
+        self.browser_session = browser_session
+    
+    async def scout_page(self, url: str) -> int:
+        """
+        Scout the webpage and count OM/download buttons
+        Returns: number of OM buttons found (0, 1, or >1)
+        """
+        try:
+            print(f"🔍 Scout Agent: Analyzing {url} for OM buttons...")
+            
+            scout_prompt = f'''Your ONLY task is to count OM/download buttons on this webpage: {url}
+
+            **WHAT TO COUNT**:
+            Count buttons/links that represent downloadable Offering Memorandums, marketing materials, or property documents.
+            
+            **LOOK FOR BUTTONS WITH TEXT LIKE**:
+            - "VIEW PACKAGE", "Download Package", "Get Package"
+            - "Download Brochure", "Download OM", "Download Flyer" 
+            - "Marketing Package", "Investment Package"
+            - "Offering Memorandum", "Investment Summary"
+            - "Property Details", "Lease Brochure"
+            - "PIB", "Package", "Brochure", "Flyer", "OM"
+            - Any button that suggests downloadable offering memorandum
+            
+            **WHAT NOT TO COUNT**:
+            - Property listings (we want download buttons, not property cards)
+            - Navigation links (About, Contact, etc.)
+            - Social media links
+            - General website buttons
+            
+            **EXPLORATION STRATEGY**:
+            1. Navigate to {url}
+            2. The viewport is configured to see ALL page content at once
+            3. Systematically scan and count ALL OM/download buttons on the entire page
+            4. Do NOT navigate to other pages - analyze ONLY this single page
+            
+            **OUTPUT REQUIREMENT**:
+            Your final response MUST contain ONLY a number: 0, 1, 2, 3, etc.
+            Do NOT include any other text in your final response.
+            
+            **EXAMPLE RESPONSES**:
+            - If no OM buttons found: "0"
+            - If one OM button found: "1" 
+            - If three OM buttons found: "3"
+            
+            START: Navigate to {url} and count OM buttons. Report ONLY the number.'''
+            
+            # Create lightweight scout agent with full page viewport
+            scout_browser_profile = BrowserProfile(
+                download_dir=str(Path.home() / "Downloads"),
+                allowed_domains=["*"],
+                headless=False,
+                browser_type="chromium",
+                viewport_expansion=-1,  # SEE ENTIRE PAGE AT ONCE
+                extra_chromium_args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-web-security",
+                ]
+            )
+            
+            scout_browser_session = BrowserSession(
+                browser_profile=scout_browser_profile
+            )
+            
+            scout_agent = Agent(
+                task=scout_prompt,
+                llm=self.llm,
+                browser_session=scout_browser_session,
+                controller=controller,
+            )
+            
+            # Run scout with minimal steps
+            await scout_agent.run(max_steps=6)
+            
+            # Extract the count from the scout's final result
+            count = 0
+            
+            # The agent stores results in the action history
+            if scout_agent.state and scout_agent.state.history:
+                try:
+                    # Check model actions for the 'done' action which contains the result
+                    actions = scout_agent.state.history.model_actions()
+                    for action in actions:
+                        if isinstance(action, dict) and 'done' in action:
+                            done_data = action['done']
+                            if isinstance(done_data, dict) and 'text' in done_data:
+                                result_text = str(done_data['text']).strip()
+                                if result_text.isdigit():
+                                    count = int(result_text)
+                                    break
+                    
+                    # Fallback: check other result locations if count still 0
+                    if count == 0:
+                        for action in actions:
+                            if isinstance(action, dict):
+                                result_keys = ['result', 'output', 'response', 'answer', 'value']
+                                for key in result_keys:
+                                    if key in action and action[key] is not None:
+                                        result_value = action[key]
+                                        if isinstance(result_value, (int, float)):
+                                            count = int(result_value)
+                                            break
+                                        elif isinstance(result_value, str) and result_value.strip().isdigit():
+                                            count = int(result_value.strip())
+                                            break
+                                if count > 0:
+                                    break
+                    
+                except Exception as e:
+                    print(f"⚠️ Scout result extraction error: {e}")
+            
+            # Close scout browser session
+            try:
+                await scout_browser_session.close()
+            except:
+                pass
+            
+            print(f"🔍 Scout Result: Found {count} OM button(s)")
+            return count
+            
+        except Exception as e:
+            print(f"❌ Scout Agent error: {e}")
+            # Default to 1 to allow main agent to try
+            return 1
+    
+    def _extract_count_from_result(self, result: str) -> int:
+        """Extract numerical count from scout agent result"""
+        try:
+            # Look for standalone numbers in the result
+            import re
+            
+            # First try to find a standalone number at the end of result
+            result_str = str(result).strip()
+            
+            # Check if the result is just a number
+            if result_str.isdigit():
+                return int(result_str)
+            
+            # Look for numbers in the text
+            numbers = re.findall(r'\b(\d+)\b', result_str)
+            if numbers:
+                return int(numbers[-1])  # Take the last number found
+            
+            # If no numbers found, look for text indicators
+            result_lower = result_str.lower()
+            if any(word in result_lower for word in ['none', 'zero', 'no buttons', 'not found']):
+                return 0
+            elif any(word in result_lower for word in ['one', 'single', '1']):
+                return 1
+            elif any(word in result_lower for word in ['multiple', 'several', 'many']):
+                return 2  # Default for multiple
+            
+            # Default to 0 if unclear (changed from 1 to 0 for safety)
+            return 0
+            
+        except Exception:
+            return 0
+
 class OMFlyerDownloader:
     def __init__(self, openai_api_key=None):
         """Initialize the OM/Flyer downloader with enhanced configuration"""
@@ -728,7 +893,6 @@ class OMFlyerDownloader:
                                 # Create a placeholder file to indicate download was attempted
                                 with open(download_path, 'w') as f:
                                     f.write(f"Download attempted but failed to save: {download.suggested_filename}")
-                                self.downloaded_files.append(download_path)
                     
                     print(f"✅ Downloaded: {download_path}")
                     if download_path.exists():
@@ -750,7 +914,7 @@ class OMFlyerDownloader:
             
         except Exception as e:
             print(f"❌ Error setting up download handlers: {e}")
-
+    
     async def monitor_downloads(self, agent):
         """Enhanced monitor with multiple stop mechanisms"""
         try:
@@ -831,7 +995,7 @@ class OMFlyerDownloader:
 
     async def download_om_flyer(self, url: str) -> dict:
         """
-        Main workflow to download OM/Flyer from a given URL using a dynamic strategy
+        Main workflow with 2-agent architecture: Scout first, then Main agent based on count
         """
         # Record start time
         start_time = time.time()
@@ -845,11 +1009,13 @@ class OMFlyerDownloader:
             "downloaded_files": [],
             "error": None,
             "steps_completed": [],
-            "execution_time_seconds": 0
+            "execution_time_seconds": 0,
+            "om_buttons_found": 0,
+            "strategy_used": ""
         }
         
         try:
-            print(f"🏠 Starting OM/Flyer download workflow for: {url}")
+            print(f"🏠 Starting 2-Agent OM/Flyer download workflow for: {url}")
             domain_dir = self.get_domain_folder(url)
             print(f"📁 Downloads will be saved to: {domain_dir}")
             
@@ -862,124 +1028,31 @@ class OMFlyerDownloader:
                 browser_profile=self.browser_profile
             )
             
-            # Set up download handlers before starting the agent
-            await self.setup_download_handlers()
+            # PHASE 1: SCOUT AGENT - Count OM buttons
+            print("\n🔍 PHASE 1: Scout Agent - Counting OM buttons...")
+            scout = OMScoutAgent(self.llm, self.browser_session)
+            om_button_count = await scout.scout_page(url)
             
-            # Skip scout phase and go directly to download - it's causing issues
-            print("\n🤖 Strategy: Direct download approach - navigating to page and finding download buttons.")
+            result["om_buttons_found"] = om_button_count
+            result["steps_completed"].append(f"Scout found {om_button_count} OM button(s)")
             
-            task_prompt = f'''Your task is to download the Offering Memorandum (OM) or marketing flyer from the page: {url}
-
-            **STEP 1: NAVIGATE AND SCAN**
-            ───────────────────────────────────────────────────────────────────────────────────
-            1. First, navigate to the URL: {url}
-            2. Wait for the page to fully load
-            3. **PRIMARY GOAL**: Find buttons/links that represent downloadable Offering Memorandums, marketing materials, or property documents
-            
-            **STEP 2: LOOK FOR DOWNLOAD BUTTONS**
-            ───────────────────────────────────────────────────────────────────────────────────
-            Look for buttons/text like:
-            - "VIEW PACKAGE" - this is very common on Levy Retail sites
-            - "Download Package", "Download Brochure", "Download OM", "Get Package"
-            - "Marketing Package", "Investment Package", "Property Summary"
-            - "Offering Memorandum", "Investment Summary", "Property Details"
-            - Any text that suggests downloadable property marketing materials
-
-            **STEP 3: INTELLIGENT SCROLLING STRATEGY**
-            ───────────────────────────────────────────────────────────────────────────────────
-            - **CURRENT SCAN**: First, thoroughly examine what's currently visible for download buttons
-            - **SMART MOVEMENT**: If no relevant downloads found in current viewport:
-              * **If near TOP of page**: Use 'scroll_down' with `pages=0.5` to explore downward
-              * **If near BOTTOM of page**: Use 'scroll_up' with `pages=0.5` to explore upward  
-              * **If in MIDDLE**: Try scrolling down first, then up if needed
-            - **AVOID REPETITION**: Don't re-analyze the same content you've already examined
-            - **PERSISTENCE**: Keep exploring different page sections until you find download elements
-
-            **STEP 4: DOWNLOAD EXECUTION - STOP IMMEDIATELY AFTER**
-            ───────────────────────────────────────────────────────────────────────────────────
-            4. Once you find the appropriate download button (like "VIEW PACKAGE"), click it. This will either:
-               a) DIRECT DOWNLOAD: File downloads immediately to downloads folder, OR
-               b) NEW TAB PDF: PDF opens in a new tab that needs to be downloaded
-               c) FORM APPEARS: A form appears that needs to be filled out
-            
-            FOR FORMS (if a form appears after clicking):
-               - Fill it out with professional data:
-                 * Name: John Doe
-                 * Email: johndoe@email.com
-                 * Phone: 555-123-4567
-                 * Company: Real Estate Investments LLC
-                 * Use 'select_dropdown_option_generic' for dropdowns
-                 * Use 'check_terms_checkbox' for terms acceptance
-               - After filling ALL form fields, scroll to find Submit button if not visible
-               - Click Submit button (ignore any errors)
-               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
-            
-            FOR DIRECT PDF LINKS (if PDF opens in new tab):
-               - Switch to PDF tab and call 'download_pdf_direct' action
-               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
-            
-            FOR DIRECT DOWNLOADS:
-               - If you see any download confirmation message or the file downloads
-               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
-            
-            **CRITICAL RULES - STOP IMMEDIATELY AFTER ANY DOWNLOAD ACTION**:
-            ───────────────────────────────────────────────────────────────────────────────────
-            - Start by navigating to {url}
-            - Look specifically for "VIEW PACKAGE" button on Levy Retail sites
-            - Use intelligence to identify download opportunities
-            - Scroll systematically with `pages=0.5` if needed
-            - **MANDATORY**: After clicking ANY download button, submit button, or download link, IMMEDIATELY call 'done'
-            - **MANDATORY**: If you see "Download" or "Package" or any file download, IMMEDIATELY call 'done'
-            - **MANDATORY**: If 'download_pdf_direct' returns ANY message, IMMEDIATELY call 'done'
-            - **ALTERNATIVE**: Call 'stop_workflow_after_download' action to force stop
-            - **NO ADDITIONAL STEPS**: Do not continue working after ANY download-related action
-            - **STOP WORKING**: Once you've clicked a download/submit button, your task is complete
-            - **DO NOT**: Click the same button multiple times
-            - **DO NOT**: Keep looking for more downloads after one is found
-            
-            **EXAMPLE FLOW**:
-            1. Navigate to page
-            2. Find "VIEW PACKAGE" button
-            3. Click "VIEW PACKAGE" 
-            4. Fill form if it appears
-            5. Click Submit
-            6. **IMMEDIATELY call 'done' - TASK COMPLETE**
-            
-            **START**: Navigate to {url} and find the download button. STOP immediately after clicking it.
-            '''
-            
-            print("\n🤖 Main Agent: Executing download strategy...")
-            
-            # Create agent with the selected task
-            agent = Agent(
-                task=task_prompt,
-                llm=self.llm,
-                browser_session=self.browser_session,
-                controller=controller,
-            )
-            
-            # Run the agent with sufficient steps, but monitor will stop it early on download
-            try:
-                await agent.run(
-                    on_step_start=self.monitor_downloads,
-                    max_steps=15  # Reduced steps since we want to stop quickly
-                )
-            except StopIteration as e:
-                print(f"🛑 Agent stopped early due to download completion: {e}")
-                result["steps_completed"].append("Agent stopped after download detected")
-            except Exception as e:
-                if "StopIteration" in str(e):
-                    print(f"🛑 Agent stopped after download: {e}")
-                    result["steps_completed"].append("Agent stopped after download detected")
-                else:
-                    print(f"❌ Agent error: {e}")
-                    raise e
-            
-            result["steps_completed"].append("Browser Use agent completed")
-            
-            # Wait for downloads to complete BEFORE closing browser
-            print("⏳ Waiting 5 seconds for downloads to complete before closing browser...")
-            await asyncio.sleep(5)  # Increased wait time to allow downloads
+            # PHASE 2: Decide strategy based on scout results
+            if om_button_count == 0:
+                print("\n❌ PHASE 2: No OM buttons found - Skipping main agent")
+                result["strategy_used"] = "skip"
+                result["error"] = "No OM buttons found on the webpage"
+                result["steps_completed"].append("Skipped main agent - no buttons found")
+                return result
+                
+            elif om_button_count == 1:
+                print("\n🤖 PHASE 2: Single OM button - Using focused download strategy")
+                result["strategy_used"] = "single"
+                await self._download_single_om(url, result)
+                
+            else:  # om_button_count > 1
+                print(f"\n🤖 PHASE 2: Multiple OM buttons ({om_button_count}) - Using batch download strategy")
+                result["strategy_used"] = "batch"
+                await self._download_multiple_oms(url, result, om_button_count)
             
             # Check for newly downloaded files (compare with existing files)
             current_files = set(domain_dir.glob("*.pdf"))
@@ -1003,10 +1076,11 @@ class OMFlyerDownloader:
                     print(f"  • {file_path.name} ({file_path.stat().st_size // 1024} KB)")
                 self.downloaded_files = list(new_files)
             else:
-                result["error"] = "No new files were downloaded"
-                print("❌ No new files were downloaded")
-                if existing_files:
-                    print(f"ℹ️  Note: {len(existing_files)} existing files found in folder (not counted as new downloads)")
+                if result["strategy_used"] != "skip":
+                    result["error"] = "No new files were downloaded"
+                    print("❌ No new files were downloaded")
+                    if existing_files:
+                        print(f"ℹ️  Note: {len(existing_files)} existing files found in folder (not counted as new downloads)")
             
         except Exception as e:
             result["error"] = str(e)
@@ -1017,6 +1091,7 @@ class OMFlyerDownloader:
             result["execution_time_seconds"] = end_time - start_time
             
             print(f"\n⏱️ Workflow Execution Time: {result['execution_time_seconds']:.1f} seconds")
+            print(f"📊 Strategy Used: {result['strategy_used']} ({result['om_buttons_found']} buttons)")
             
             try:
                 await self.browser_session.close()
@@ -1025,30 +1100,223 @@ class OMFlyerDownloader:
         
         return result
 
+    async def _download_single_om(self, url: str, result: dict):
+        """Handle single OM button download (original approach)"""
+        try:
+            # Set up download handlers before starting the agent
+            await self.setup_download_handlers()
+            
+            task_prompt = f'''Your task is to download the SINGLE Offering Memorandum (OM) from: {url}
+
+            **CONTEXT**: Scout agent confirmed there is exactly 1 OM button on this page.
+
+            **STEP 1: NAVIGATE AND LOCATE**
+            ───────────────────────────────────────────────────────────────────────────────────
+            1. Navigate to: {url}
+            2. **FIND THE OM BUTTON**: Look for the single download button (VIEW PACKAGE, Download Brochure, etc.)
+            3. Use half-page scrolling (`pages=0.5`) if needed to locate it
+
+            **STEP 2: DOWNLOAD EXECUTION - STOP IMMEDIATELY AFTER**
+                ───────────────────────────────────────────────────────────────────────────────────
+            1. Click the OM button
+            2. **IF FORM APPEARS**: Fill with John Doe, johndoe@email.com, 555-123-4567 and submit
+            3. **IF PDF OPENS IN NEW TAB**: Use 'download_pdf_direct' action to download it
+            4. **IF DIRECT DOWNLOAD**: File will download automatically
+            5. **IMMEDIATELY call 'done' after ANY download action**
+                
+                **CRITICAL RULES**:
+            - After clicking download/submit button, IMMEDIATELY call 'done'
+            - If PDF opens in new tab and you can't switch tabs, use 'download_pdf_direct'
+            - Do not continue working after any download action
+            
+            START: Find and click the single OM button, handle the download, then stop immediately.'''
+            
+            # Create main agent
+            agent = Agent(
+                task=task_prompt,
+                llm=self.llm,
+                browser_session=self.browser_session,
+                controller=controller,
+            )
+            
+            # Run the agent
+            try:
+                await agent.run(
+                    on_step_start=self.monitor_downloads,
+                    max_steps=10  # Fewer steps for single download
+                )
+            except StopIteration as e:
+                print(f"🛑 Agent stopped early due to download completion: {e}")
+                result["steps_completed"].append("Agent stopped after download detected")
+            except Exception as e:
+                if "StopIteration" in str(e):
+                    print(f"🛑 Agent stopped after download: {e}")
+                    result["steps_completed"].append("Agent stopped after download detected")
+                else:
+                    print(f"❌ Agent error: {e}")
+                    raise e
+            
+            result["steps_completed"].append("Single OM download completed")
+            
+            # Wait for downloads to complete
+            print("⏳ Waiting 5 seconds for downloads to complete...")
+            await asyncio.sleep(5)
+            
+        except Exception as e:
+            print(f"❌ Error in single OM download: {e}")
+            result["error"] = str(e)
+
+    async def _download_multiple_oms(self, url: str, result: dict, expected_count: int):
+        """Handle multiple OM buttons download (batch approach)"""
+        try:
+            # Set up download handlers before starting the agent
+            await self.setup_download_handlers()
+            
+            task_prompt = f'''Your task is to download ALL {expected_count} Offering Memorandums from: {url}
+
+            **CONTEXT**: Scout agent found {expected_count} OM buttons on this page.
+
+            **STEP 1: NAVIGATE AND SCAN**
+            ───────────────────────────────────────────────────────────────────────────────────
+            1. Navigate to: {url}
+            2. **SYSTEMATICALLY FIND ALL OM BUTTONS**: Use half-page scrolling to explore entire page
+            3. Look for ALL buttons like: VIEW PACKAGE, Download Brochure, Download OM, etc.
+            4. **COUNT THEM**: Confirm you found {expected_count} OM buttons
+
+            **STEP 2: BATCH DOWNLOAD STRATEGY**
+            ───────────────────────────────────────────────────────────────────────────────────
+            1. **DOWNLOAD EACH OM SEQUENTIALLY**:
+               - Click first OM button → handle form if needed → wait for download
+               - Click second OM button → handle form if needed → wait for download  
+               - Continue until all {expected_count} OMs are downloaded
+            
+            2. **FOR EACH DOWNLOAD**:
+               - Fill forms with: John Doe, johndoe@email.com, 555-123-4567
+               - Wait 2-3 seconds between downloads
+               - Use 'download_pdf_direct' if PDFs open in new tabs
+            
+            3. **COMPLETION**: After downloading ALL {expected_count} OMs, call 'done'
+
+            **CRITICAL RULES**:
+            - Download ALL {expected_count} OMs before calling 'done'
+            - Handle each download completely before moving to next
+            - Do not stop after first download - continue until all are downloaded
+            
+            START: Find all {expected_count} OM buttons and download each one systematically.'''
+            
+            # Create main agent with more steps for batch processing
+            agent = Agent(
+                task=task_prompt,
+                llm=self.llm,
+                browser_session=self.browser_session,
+                controller=controller,
+            )
+            
+            # Use custom monitor that doesn't stop immediately for batch downloads
+            async def batch_monitor(agent):
+                """Monitor that allows multiple downloads before stopping"""
+                try:
+                    await self.setup_download_handlers()
+                    
+                    page = await agent.browser_session.get_current_page()
+                    current_url = page.url
+                    
+                    step_count = len(agent.state.history.model_actions()) if hasattr(agent, 'state') and agent.state else 0
+                    print(f"📍 Batch Step {step_count}: {current_url}")
+                    
+                    # Only stop when we have expected number of downloads
+                    if len(self.downloaded_files) >= expected_count:
+                        print(f"🛑 Batch complete! Downloaded {len(self.downloaded_files)}/{expected_count} files")
+                        self.should_stop = True
+                        raise StopIteration(f"Batch download completed - {len(self.downloaded_files)} files downloaded")
+                        
+                except StopIteration:
+                    raise
+                except Exception as e:
+                    print(f"Batch monitor error: {e}")
+            
+            # Run the agent
+            try:
+                await agent.run(
+                    on_step_start=batch_monitor,
+                    max_steps=20  # More steps for multiple downloads
+                )
+            except StopIteration as e:
+                print(f"🛑 Batch agent stopped: {e}")
+                result["steps_completed"].append("Batch agent stopped after downloads completed")
+            except Exception as e:
+                if "StopIteration" in str(e):
+                    print(f"🛑 Batch agent stopped: {e}")
+                    result["steps_completed"].append("Batch agent stopped after downloads completed")
+                else:
+                    print(f"❌ Batch agent error: {e}")
+                    raise e
+            
+            result["steps_completed"].append(f"Batch OM download completed - {len(self.downloaded_files)} files")
+            
+            # Wait for all downloads to complete
+            print("⏳ Waiting 8 seconds for all batch downloads to complete...")
+            await asyncio.sleep(8)
+            
+        except Exception as e:
+            print(f"❌ Error in batch OM download: {e}")
+            result["error"] = str(e)
+
 def print_results_summary(results: list):
-    """Print a summary of download results"""
-    print("\n" + "="*60)
-    print("📊 DOWNLOAD SUMMARY")
-    print("="*60)
+    """Print a summary of download results with 2-agent architecture details"""
+    print("\n" + "="*70)
+    print("📊 2-AGENT DOWNLOAD SUMMARY")
+    print("="*70)
     
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
+    skipped = [r for r in results if r.get("strategy_used") == "skip"]
     
     print(f"✅ Successful downloads: {len(successful)}")
     print(f"❌ Failed downloads: {len(failed)}")
+    print(f"⏭️  Skipped (no OM buttons): {len(skipped)}")
+    
+    # Show strategy breakdown
+    single_strategy = [r for r in results if r.get("strategy_used") == "single"]
+    batch_strategy = [r for r in results if r.get("strategy_used") == "batch"]
+    
+    print(f"\n📋 Strategy Breakdown:")
+    print(f"  🎯 Single OM downloads: {len(single_strategy)}")
+    print(f"  📦 Batch OM downloads: {len(batch_strategy)}")
+    print(f"  ⏭️  Skipped (no buttons): {len(skipped)}")
     
     if successful:
         print("\n🎉 Successfully Downloaded:")
         for result in successful:
             if result["downloaded_files"]:
+                strategy = result.get("strategy_used", "unknown")
+                button_count = result.get("om_buttons_found", "?")
+                print(f"\n  📄 {result['url']} [{strategy.upper()} - {button_count} button(s)]")
                 for file_path in result["downloaded_files"]:
                     file_name = Path(file_path).name
-                    print(f"  • {file_name} from {result['url']}")
+                    print(f"    • {file_name}")
+    
+    if skipped:
+        print("\n⏭️ Skipped (No OM Buttons Found):")
+        for result in skipped:
+            print(f"  • {result['url']}")
     
     if failed:
         print("\n❌ Failed Downloads:")
         for result in failed:
-            print(f"  • {result['url']}: {result['error']}")
+            strategy = result.get("strategy_used", "unknown")
+            button_count = result.get("om_buttons_found", "?")
+            print(f"  • {result['url']} [{strategy.upper()} - {button_count} button(s)]: {result['error']}")
+    
+    # Show efficiency stats
+    total_time = sum(r["execution_time_seconds"] for r in results)
+    total_files = sum(len(r["downloaded_files"]) for r in successful)
+    
+    print(f"\n⚡ Efficiency Stats:")
+    print(f"  ⏱️  Total execution time: {total_time:.1f} seconds")
+    print(f"  📁 Total files downloaded: {total_files}")
+    if total_files > 0:
+        print(f"  📊 Average time per file: {total_time/total_files:.1f} seconds")
 
 async def main():
     """Enhanced main function with better error handling"""
