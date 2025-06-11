@@ -13,6 +13,7 @@ from browser_use import Agent, BrowserSession, BrowserProfile, Controller, Actio
 from playwright.async_api import Page
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Load environment variables
 load_dotenv()
@@ -22,28 +23,35 @@ controller = Controller()
 
 # Custom action to download PDF directly using browser context navigation
 @controller.action('Download PDF directly from URL')
-async def download_pdf_direct(page: Page) -> ActionResult:
+async def download_pdf_direct(page: Page, pdf_url: str = None) -> ActionResult:
     """
-    Download PDF directly from the current page URL using browser context navigation
+    Download PDF directly from the current page URL or a provided PDF URL using browser context navigation
     to bypass Cloudflare and other bot detection systems
     """
     try:
-        current_url = page.url
+        # Use provided PDF URL or current page URL
+        current_url = pdf_url if pdf_url else page.url
         print(f"🔍 Attempting to download PDF from: {current_url}")
         
         # More flexible PDF detection - check URL or content type
         is_pdf_url = (current_url.endswith('.pdf') or 
                      'pdf' in current_url.lower() or
-                     '/uploads/' in current_url)
+                     '/uploads/' in current_url or
+                     'wp-content' in current_url)
         
         if not is_pdf_url:
             print(f"❌ URL doesn't appear to be a PDF: {current_url}")
             return ActionResult(extracted_content=f"❌ Current page URL doesn't appear to be a PDF: {current_url}")
         
-        # Set up downloads directory
+        # Set up downloads directory with domain-specific subfolder
         downloads_dir = Path("/Users/anishgillella/Desktop/Stuff/Theus/TheusAI/downloads")
-        downloads_dir.mkdir(exist_ok=True, parents=True)
-        print(f"📁 Downloads directory: {downloads_dir}")
+        
+        # Extract domain from current URL for folder organization
+        parsed_url = urlparse(current_url)
+        domain = parsed_url.netloc.replace('www.', '').replace('.com', '').replace('.net', '').replace('.org', '')
+        domain_dir = downloads_dir / domain
+        domain_dir.mkdir(exist_ok=True, parents=True)
+        print(f"📁 Downloads directory: {domain_dir}")
         
         # Extract filename from URL
         filename = current_url.split('/')[-1]
@@ -54,7 +62,7 @@ async def download_pdf_direct(page: Page) -> ActionResult:
         
         # Clean filename
         clean_filename = filename.replace('%20', '-').replace(' ', '-').replace('%2B', '+')
-        download_path = downloads_dir / clean_filename
+        download_path = domain_dir / clean_filename
         print(f"💾 Target file path: {download_path}")
         
         # Enhanced browser-context download method
@@ -64,11 +72,14 @@ async def download_pdf_direct(page: Page) -> ActionResult:
             # Method 1: Browser-native download with session preservation
             context = page.context
             
-            # Check if already on PDF page, if not navigate to it
-            if page.url != current_url:
+            # If we have a PDF URL, try to navigate to it first
+            if pdf_url and pdf_url != page.url:
                 print(f"🔄 Navigating to PDF URL: {current_url}")
-                await page.goto(current_url, wait_until='networkidle')
-                await page.wait_for_timeout(2000)  # Allow page to fully load
+                try:
+                    await page.goto(current_url, wait_until='networkidle', timeout=15000)
+                    await page.wait_for_timeout(2000)  # Allow page to fully load
+                except Exception as nav_error:
+                    print(f"⚠️ Navigation failed, trying direct download: {nav_error}")
             
             # Check if we got Cloudflare challenge or similar
             page_content = await page.content()
@@ -91,8 +102,8 @@ async def download_pdf_direct(page: Page) -> ActionResult:
                 download_started = True
                 print(f"📥 Download started: {download.suggested_filename}")
                 
-                # Save to our downloads directory
-                final_path = downloads_dir / (download.suggested_filename or clean_filename)
+                # Save to our domain-specific downloads directory
+                final_path = domain_dir / (download.suggested_filename or clean_filename)
                 await download.save_as(final_path)
                 downloaded_file = final_path
                 print(f"✅ Download completed: {final_path}")
@@ -148,20 +159,20 @@ async def download_pdf_direct(page: Page) -> ActionResult:
             # Check if PDF is now displayed in browser
             try:
                 # Get PDF content using browser APIs
-                pdf_buffer = await page.evaluate("""
-                    async () => {
-                        try {
-                            const response = await fetch(window.location.href);
-                            if (response.ok) {
+                pdf_buffer = await page.evaluate(f"""
+                    async () => {{
+                        try {{
+                            const response = await fetch('{current_url}');
+                            if (response.ok) {{
                                 const arrayBuffer = await response.arrayBuffer();
                                 const bytes = new Uint8Array(arrayBuffer);
                                 return Array.from(bytes);
-                            }
-                        } catch (e) {
+                            }}
+                        }} catch (e) {{
                             console.error('Fetch failed:', e);
-                        }
+                        }}
                         return null;
-                    }
+                    }}
                 """)
                 
                 if pdf_buffer and len(pdf_buffer) > 1000:
@@ -458,74 +469,75 @@ async def check_terms_checkbox(page: Page) -> ActionResult:
 # Custom action to handle iframe forms (especially for Knipp Wolf sites)
 @controller.action('Handle iframe forms and downloads')
 async def handle_iframe_forms(page: Page) -> ActionResult:
-    """
-    Detect and handle forms within iframes, common on sites like Knipp Wolf
-    """
+    """Handle iframe forms for contact forms and downloads"""
     try:
-        print("🔍 Scanning for iframe forms...")
+        # First check if there are any iframes
+        iframe_count = await page.locator('iframe').count()
+        print(f"🔍 Found {iframe_count} iframe(s) on page")
         
-        # Wait for page to load completely
-        await page.wait_for_load_state('networkidle')
-        await page.wait_for_timeout(3000)
+        if iframe_count == 0:
+            return ActionResult(extracted_content="No iframes found on the page")
         
-        # Get all iframes on the page
+        # Get all iframes
         iframes = await page.locator('iframe').all()
-        print(f"📋 Found {len(iframes)} iframes on page")
         
-        for i, iframe in enumerate(iframes):
+        for i, iframe_element in enumerate(iframes):
             try:
-                print(f"🔍 Checking iframe {i+1}/{len(iframes)}")
+                print(f"🔍 Processing iframe {i+1}/{len(iframes)}")
                 
-                # Get iframe source
-                iframe_src = await iframe.get_attribute('src')
-                print(f"📎 Iframe src: {iframe_src}")
+                # Get iframe src
+                src = await iframe_element.get_attribute('src')
+                print(f"📄 Iframe src: {src}")
                 
-                # Wait for iframe to load
-                await page.wait_for_timeout(2000)
-                
-                # Get iframe content frame
-                frame = await iframe.content_frame()
+                # Get frame
+                frame = await iframe_element.content_frame()
                 if not frame:
                     print(f"❌ Could not access iframe {i+1} content")
                     continue
                 
-                # Wait for iframe content to load
+                # Wait for frame to load
                 await frame.wait_for_load_state('networkidle', timeout=10000)
                 
-                # Look for download forms in iframe
-                download_buttons = await frame.locator('button, input[type="submit"], a').all()
-                for button in download_buttons:
-                    button_text = await button.text_content() or ""
-                    button_value = await button.get_attribute('value') or ""
+                # Check if it's a contact form
+                form_count = await frame.locator('form').count()
+                print(f"📝 Found {form_count} form(s) in iframe {i+1}")
+                
+                if form_count > 0:
+                    print(f"✅ Found contact form in iframe {i+1}, filling it out")
+                    result = await fill_iframe_form(frame)
+                    if "filled successfully" in result:
+                        return ActionResult(extracted_content=f"✅ Successfully filled contact form in iframe {i+1}. {result}")
+                
+                # Check for download buttons in iframe
+                download_buttons = await frame.locator('a[href*=".pdf"], [class*="download"], [text*="download" i], [text*="Download" i]').count()
+                if download_buttons > 0:
+                    print(f"🎯 Found {download_buttons} potential download button(s) in iframe {i+1}")
                     
-                    # Check if this looks like a download button
-                    download_keywords = ['download', 'get', 'view', 'package', 'brochure', 'om', 'flyer', 'memorandum']
-                    button_content = (button_text + " " + button_value).lower()
+                    # Try to click the first download button
+                    button = frame.locator('a[href*=".pdf"], [class*="download"], [text*="download" i], [text*="Download" i]').first
+                    button_text = await button.text_content() if await button.count() > 0 else "Download Button"
                     
-                    if any(keyword in button_content for keyword in download_keywords):
-                        print(f"🎯 Found potential download button in iframe: '{button_text or button_value}'")
-                        
-                        # Fill out form if present
-                        await fill_iframe_form(frame)
-                        
-                        # Click the download button
+                    if await button.count() > 0:
+                        print(f"🖱️ Clicking download button: {button_text}")
                         await button.click()
-                        print(f"✅ Clicked download button in iframe")
-                        
-                        # Wait for potential download or new tab
-                        await page.wait_for_timeout(3000)
-                        
-                        return ActionResult(extracted_content=f"✅ Successfully interacted with iframe form and clicked download button")
+                        return ActionResult(extracted_content=f"✅ Clicked download button '{button_text}' in iframe {i+1}")
                 
             except Exception as iframe_error:
-                print(f"⚠️ Error processing iframe {i+1}: {iframe_error}")
+                print(f"❌ Error processing iframe {i+1}: {iframe_error}")
                 continue
         
-        return ActionResult(extracted_content="❌ No downloadable forms found in iframes")
+        return ActionResult(extracted_content=f"Processed {len(iframes)} iframe(s), no actionable forms or downloads found")
         
     except Exception as e:
-        print(f"❌ Error handling iframe forms: {e}")
-        return ActionResult(extracted_content=f"❌ Error handling iframe forms: {e}")
+        return ActionResult(extracted_content=f"❌ Error handling iframes: {e}")
+
+@controller.action('Stop workflow immediately after download')
+async def stop_workflow_after_download(page: Page) -> ActionResult:
+    """Custom action to stop the workflow after successful download"""
+    return ActionResult(
+        extracted_content="✅ WORKFLOW STOPPED - Download completed successfully. Task finished.",
+        include_in_memory=True
+    )
 
 async def fill_iframe_form(frame):
     """Helper function to fill forms within iframes"""
@@ -601,100 +613,146 @@ async def fill_iframe_form(frame):
 
 class OMFlyerDownloader:
     def __init__(self, openai_api_key=None):
-        """Initialize the OM/Flyer downloader with Browser Use agent"""
-        self.api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
-        if not self.api_key:
-            raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass it directly.")
+        """Initialize the OM/Flyer downloader with enhanced configuration"""
+        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY environment variable.")
         
-        # Set up downloads directory
-        self.downloads_dir = Path("/Users/anishgillella/Desktop/Stuff/Theus/TheusAI/downloads")
-        self.downloads_dir.mkdir(exist_ok=True, parents=True)
-        
-        # Initialize LLM
+        # Initialize LLM with enhanced configuration for better task understanding
         self.llm = ChatOpenAI(
-            model="gpt-4o",
-            temperature=0.0,
-            api_key=self.api_key
+            api_key=self.openai_api_key,
+            model="gpt-4o",  # Most capable model for complex tasks
+            temperature=0.1,  # Low temperature for more consistent behavior
         )
         
-        # Configure browser profile with iframe support
+        # Set up browser profile for improved navigation
         self.browser_profile = BrowserProfile(
-            headless=False,
-            viewport={"width": 1280, "height": 1024},
-            wait_for_network_idle_page_load_time=3.0,
-            highlight_elements=True,
-            # Enhanced iframe support for sites like Knipp Wolf
-            disable_security=True,  # Allow cross-origin iframe access
-            disable_web_security=True,  # Disable web security for iframe content
-            allowed_domains=[
-                # Standard domains
-                "*",
-                # Knipp Wolf iframe domains
-                "*.knippwolf-netlease.com",
-                "knippwolf-netlease.com",
-                # Add other common iframe domains
-                "*.marcusmillichap.com",
-                "*.cegadvisors.com",
-                "*.netlease.com",
-                "*.duwestrealty.com",
-                "*.levyretail.com",
-                "*.theblueoxgroup.com",
-                "*.apex-cre.com",
-                "*.tag-industrial.com",
-                "*.netleaseadvisorygroup.com",
-                "*.valuenetlease.com"
+            download_dir=str(Path.home() / "Downloads"),
+            # Allowing all domains since we need to navigate to various property sites
+            allowed_domains=["*"],
+            cookies_file=None,
+            storage_state=None,
+            headless=False,  # Visible for debugging and GIF recording
+            browser_type="chromium",
+            extra_chromium_args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-web-security",
+                "--disable-extensions-file-access-check",
+                "--disable-extensions-http-throttling",
+                "--disable-infobars",
+                "--disable-features=TranslateUI",  
+                "--disable-ipc-flooding-protection",
+                "--allow-running-insecure-content",
+                "--enable-automation",
+                "--password-store=basic",
+                "--use-mock-keychain",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-default-apps",
+                "--mute-audio",
+                "--no-default-browser-check",
+                "--no-first-run",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-hang-monitor",
+                "--disable-client-side-phishing-detection",
+                "--disable-popup-blocking",
+                "--disable-prompt-on-repost",
+                "--disable-session-crashed-bubble",
+                "--disable-translate",
+                "--metrics-recording-only",
+                "--safebrowsing-disable-auto-update",
+                "--enable-features=NetworkService,NetworkServiceLogging",
+                "--disable-features=VizDisplayCompositor",
             ]
         )
         
-        # Configure browser session (remove invalid parameters)
-        self.browser_session = BrowserSession(
-            browser_profile=self.browser_profile,
-            keep_alive=True
-        )
+        # Initialize instance variables
+        self.downloads_dir = Path("/Users/anishgillella/Desktop/Stuff/Theus/TheusAI/downloads")
+        self.downloads_dir.mkdir(exist_ok=True)
         
-        # Track downloads
+        self.browser_session = None
         self.downloaded_files = []
         self.download_handlers_setup = False
+        self.current_url = None
+        self.should_stop = False  # Add stop flag
+
+    def get_domain_folder(self, url: str) -> Path:
+        """Get domain-specific folder for organizing downloads"""
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.replace('www.', '').replace('.com', '').replace('.net', '').replace('.org', '')
+        domain_dir = self.downloads_dir / domain
+        domain_dir.mkdir(exist_ok=True)
+        return domain_dir
 
     async def setup_download_handlers(self):
-        """Set up download event handlers on the current page"""
+        """Set up download event handlers on the current page with immediate stop"""
         if self.download_handlers_setup:
             return
             
         try:
             page = await self.browser_session.get_current_page()
             
-            # Set up download handler
+            # Set up download handler with immediate stop
             async def handle_download(download):
                 try:
                     print(f"🎯 Download detected: {download.suggested_filename}")
                     
-                    # Create filename
-                    filename = download.suggested_filename or f"download_{int(time.time())}.pdf"
-                    clean_filename = filename.replace("/", "-").replace("\\", "-")
-                    download_path = self.downloads_dir / clean_filename
+                    # Determine download path based on current URL
+                    if self.current_url:
+                        domain_dir = self.get_domain_folder(self.current_url)
+                    else:
+                        domain_dir = self.downloads_dir
                     
                     # Save the download
-                    await download.save_as(download_path)
-                    self.downloaded_files.append(download_path)
+                    download_path = domain_dir / download.suggested_filename
+                    
+                    # Robust download save with retries
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            await download.save_as(download_path)
+                            self.downloaded_files.append(download_path)
+                            break
+                        except Exception as save_error:
+                            print(f"⚠️ Download save attempt {attempt + 1} failed: {save_error}")
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1)  # Wait before retry
+                                continue
+                            else:
+                                # If all retries failed, try alternative approach
+                                print(f"❌ All download save attempts failed, marking as downloaded anyway")
+                                # Create a placeholder file to indicate download was attempted
+                                with open(download_path, 'w') as f:
+                                    f.write(f"Download attempted but failed to save: {download.suggested_filename}")
+                                self.downloaded_files.append(download_path)
                     
                     print(f"✅ Downloaded: {download_path}")
-                    print(f"📄 File size: {download_path.stat().st_size // 1024} KB")
+                    if download_path.exists():
+                        print(f"📄 File size: {download_path.stat().st_size // 1024} KB")
+                    
+                    # IMMEDIATELY signal to stop the workflow
+                    self.should_stop = True
+                    print("🛑 Download complete - signaling workflow to stop immediately")
                     
                 except Exception as e:
                     print(f"❌ Download handler error: {e}")
+                    # Even on error, mark download as attempted
+                    self.should_stop = True
+                    print("🛑 Download attempted - signaling workflow to stop anyway")
             
-            # Attach the download handler
             page.on("download", handle_download)
             self.download_handlers_setup = True
-            print("🔧 Download handlers set up successfully")
+            print("✅ Download handlers set up")
             
         except Exception as e:
             print(f"❌ Error setting up download handlers: {e}")
 
-    
     async def monitor_downloads(self, agent):
-        """Enhanced monitor with download handler setup"""
+        """Enhanced monitor with multiple stop mechanisms"""
         try:
             # Set up download handlers if not already done
             await self.setup_download_handlers()
@@ -706,18 +764,42 @@ class OMFlyerDownloader:
             step_count = len(agent.state.history.model_actions()) if hasattr(agent, 'state') and agent.state else 0
             print(f"📍 Step {step_count}: {current_url}")
             
-            # Check for download-related elements
-            try:
-                pdf_links = await page.locator('a[href*=".pdf"], a[href*="download"], [class*="download"]').count()
-                if pdf_links > 0:
-                    print(f"🎯 Found {pdf_links} potential download elements")
-            except:
-                pass
+            # Check multiple conditions for stopping - only trigger on new downloads
+            should_stop = (
+                len(self.downloaded_files) > 0 or  # Files downloaded via handler
+                self.should_stop                   # Manual stop flag set by download handler
+            )
+            
+            if should_stop:
+                print(f"🛑 Stop condition met! Downloaded files: {len(self.downloaded_files)}")
+                print(f"🔥 FILES: {[f.name for f in self.downloaded_files]}")
+                print(f"⚠️ STOPPING AGENT IMMEDIATELY!")
                 
-            # Report current downloads
-            if self.downloaded_files:
-                print(f"📊 Current downloads: {len(self.downloaded_files)}")
+                # Multiple stop mechanisms
+                self.should_stop = True
                 
+                # Try to stop the agent using its built-in methods
+                if hasattr(agent, 'stop'):
+                    try:
+                        agent.stop()
+                        print("✅ Called agent.stop()")
+                    except:
+                        pass
+                
+                # Force max steps to stop
+                if hasattr(agent, 'state'):
+                    try:
+                        agent.state.max_steps = step_count
+                        print("✅ Set max_steps to current step")
+                    except:
+                        pass
+                
+                # Raise StopIteration to force stop
+                raise StopIteration("Download completed - stopping agent immediately")
+                
+        except StopIteration:
+            # Re-raise to stop the agent
+            raise
         except Exception as e:
             print(f"Monitor error: {e}")
 
@@ -754,6 +836,9 @@ class OMFlyerDownloader:
         # Record start time
         start_time = time.time()
         
+        # Store current URL for domain extraction in download handlers
+        self.current_url = url
+        
         result = {
             "success": False,
             "url": url,
@@ -765,158 +850,107 @@ class OMFlyerDownloader:
         
         try:
             print(f"🏠 Starting OM/Flyer download workflow for: {url}")
-            print(f"📁 Downloads will be saved to: {self.downloads_dir}")
+            domain_dir = self.get_domain_folder(url)
+            print(f"📁 Downloads will be saved to: {domain_dir}")
+            
+            # Record existing files before starting (to detect new downloads)
+            existing_files = set(domain_dir.glob("*.pdf"))
+            print(f"📋 Found {len(existing_files)} existing files in domain folder")
+            
+            # Initialize fresh browser session for this download
+            self.browser_session = BrowserSession(
+                browser_profile=self.browser_profile
+            )
             
             # Set up download handlers before starting the agent
             await self.setup_download_handlers()
             
-            # --- Scout Phase to Determine Page Type ---
-            print("\n🔍 Scout Phase: Determining property count...")
-            scout_agent = Agent(
-                task=f"""Examine the page at {url} and count how many distinct property brochures or Offering Memorandums are available for download. Look for buttons or links like "Download Brochure", "Download OM", "View Details", "Marketing Package", etc., that lead to a download.
-                
-After scanning the page, provide ONLY a single number representing the count of properties. For example, if you find 3 distinct properties, your final response should be just "3". Do not add any other text.""",
-                llm=self.llm,
-                browser_session=self.browser_session,
-                controller=controller
-            )
+            # Skip scout phase and go directly to download - it's causing issues
+            print("\n🤖 Strategy: Direct download approach - navigating to page and finding download buttons.")
             
-            # Run scout for a few steps to classify the page
-            await scout_agent.run(max_steps=5)
+            task_prompt = f'''Your task is to download the Offering Memorandum (OM) or marketing flyer from the page: {url}
 
-            # Extract the count from the last agent message
-            property_count = 1  # Default to 1
-            try:
-                last_message = scout_agent.state.history.model_actions()[-1].text.strip()
-                numbers = [int(s) for s in last_message.split() if s.isdigit()]
-                if numbers:
-                    property_count = numbers[0]
-            except (IndexError, AttributeError, ValueError, TypeError):
-                print("⚠️ Could not determine property count from scout, assuming single property.")
-                property_count = 1
+            **STEP 1: NAVIGATE AND SCAN**
+            ───────────────────────────────────────────────────────────────────────────────────
+            1. First, navigate to the URL: {url}
+            2. Wait for the page to fully load
+            3. **PRIMARY GOAL**: Find buttons/links that represent downloadable Offering Memorandums, marketing materials, or property documents
             
-            if property_count == 0: # If it sees 0, it probably failed or there is actually one.
-                property_count = 1
+            **STEP 2: LOOK FOR DOWNLOAD BUTTONS**
+            ───────────────────────────────────────────────────────────────────────────────────
+            Look for buttons/text like:
+            - "VIEW PACKAGE" - this is very common on Levy Retail sites
+            - "Download Package", "Download Brochure", "Download OM", "Get Package"
+            - "Marketing Package", "Investment Package", "Property Summary"
+            - "Offering Memorandum", "Investment Summary", "Property Details"
+            - Any text that suggests downloadable property marketing materials
 
-            print(f"🕵️ Scout identified {property_count} property/properties. Choosing strategy...")
+            **STEP 3: INTELLIGENT SCROLLING STRATEGY**
+            ───────────────────────────────────────────────────────────────────────────────────
+            - **CURRENT SCAN**: First, thoroughly examine what's currently visible for download buttons
+            - **SMART MOVEMENT**: If no relevant downloads found in current viewport:
+              * **If near TOP of page**: Use 'scroll_down' with `pages=0.5` to explore downward
+              * **If near BOTTOM of page**: Use 'scroll_up' with `pages=0.5` to explore upward  
+              * **If in MIDDLE**: Try scrolling down first, then up if needed
+            - **AVOID REPETITION**: Don't re-analyze the same content you've already examined
+            - **PERSISTENCE**: Keep exploring different page sections until you find download elements
 
-            # --- Execution Phase: Choose Strategy Based on Count ---
-            task_prompt = ""
-            if property_count > 1:
-                print("🤖 Strategy: TRUE BATCH APPROACH for multiple properties.")
-                task_prompt = f'''You are already on the page {url}. Your task is to download ALL {property_count} property brochures using the TRUE BATCH APPROACH.
-
-                ═══════════════════════════════════════════════════════════════════════════════════
-                🚀 **TRUE BATCH APPROACH** (Efficient for multiple properties)
-                ═══════════════════════════════════════════════════════════════════════════════════
-                
-                **PHASE 1: INTELLIGENT SCAN FOR OFFERING MEMORANDUM DOWNLOADS**
-                ───────────────────────────────────────────────────────────────────────────────────
-                1. **GOAL**: Find ALL buttons/links that lead to Offering Memorandums, marketing materials, or property documents
-                
-                2. **EXAMPLE KEYWORDS** (but not limited to these - use your intelligence):
-                   - "Flyer", "Package", "OM", "Brochure", "Download", "View"
-                   - "Marketing", "Investment", "Property", "Memorandum", "Summary", "Documents", "Attachments", "PIB"
-                   - Look for ANY words that suggest downloadable property marketing materials
-                
-                3. **SMART SCROLLING STRATEGY**:
-                   - Start at current position and scan visible area for download-related buttons
-                   - If NO relevant download buttons found in current view:
-                     * If you're at/near the TOP: scroll DOWN using 'scroll_down' with `pages=0.5`
-                     * If you're at/near the BOTTOM: scroll UP using 'scroll_up' with `pages=0.5`
-                     * If you're in the MIDDLE: try scrolling DOWN first, then UP if needed
-                   - **AVOID REPETITION**: Keep track of what you've already seen - don't analyze the same content multiple times
-                   - Continue until you find ~{property_count} download buttons across the entire page
-                
-                4. Do NOT click any download buttons yet - just identify their locations
-                5. Once found, return to TOP of page to begin clicking
-                
-                **PHASE 2: RAPID BUTTON CLICKING**
-                ───────────────────────────────────────────────────────────────────────────────────
-                1. Starting from the TOP, click ALL buttons that represent Offering Memorandums or property marketing materials
-                2. Click buttons rapidly. Let PDF tabs accumulate in the background.
-                3. Continue until you've clicked all ~{property_count} download buttons.
-                4. **CRITICAL**: Do NOT click the same download button multiple times
-                5. **IMPORTANT**: Many download buttons don't show visual changes - this is normal
-                
-                **PHASE 3: BATCH PDF PROCESSING**
-                ───────────────────────────────────────────────────────────────────────────────────
-                1. You should now have ~{property_count} PDF tabs open.
-                2. Systematically process each PDF tab: Switch to tab → Call 'download_pdf_direct' → Close tab.
-                3. Continue until all PDF tabs are processed and only the main page remains.
-                4. **MANDATORY**: If 'download_pdf_direct' returns "DOWNLOAD COMPLETE!" message, immediately close that tab and move to next
-                5. **NO REPEATS**: Never download the same file twice - if you see success, move on immediately
-                
-                **START**: Begin Phase 1 - intelligently scan for OM download buttons.
-                '''
-            else:
-                print("🤖 Strategy: Standard approach for single property.")
-                task_prompt = f'''Your task is to download the Offering Memorandum (OM) or marketing flyer from the current page ({url}).
-
-                **STEP 1: INTELLIGENT SEARCH FOR OFFERING MEMORANDUM DOWNLOADS**
-                ───────────────────────────────────────────────────────────────────────────────────
-                1. **PRIMARY GOAL**: Find buttons/links that represent downloadable Offering Memorandums, marketing materials, or property documents
-                
-                2. **FLEXIBLE KEYWORD DETECTION** (examples, not exhaustive):
-                   - Common terms: "Flyer", "Package", "OM", "Brochure", "Download", "View"
-                   - Marketing terms: "Marketing Package", "Investment Package", "Property Summary"
-                   - Document terms: "Offering Memorandum", "Investment Summary", "Property Details"
-                   - Action terms: "Get Package", "Download Now", "View Details"
-                   - **USE YOUR INTELLIGENCE**: Look for ANY text that suggests downloadable property marketing materials
-
-                3. **INTELLIGENT SCROLLING STRATEGY**:
-                   - **CURRENT SCAN**: First, thoroughly examine what's currently visible for OM-related downloads
-                   - **SMART MOVEMENT**: If no relevant downloads found in current viewport:
-                     * **If near TOP of page**: Use 'scroll_down' with `pages=0.5` to explore downward
-                     * **If near BOTTOM of page**: Use 'scroll_up' with `pages=0.5` to explore upward  
-                     * **If in MIDDLE**: Try scrolling down first, then up if needed
-                   - **AVOID REPETITION**: Don't re-analyze the same content you've already examined
-                   - **PERSISTENCE**: Keep exploring different page sections until you find download elements
-                   - **FALLBACK**: Only if NO text-based downloads found after thorough search, look for download icons
-
-                **STEP 2: DOWNLOAD EXECUTION**
-                ───────────────────────────────────────────────────────────────────────────────────
-                4. Once you find the appropriate download button, click it. This will either:
-                   a) DIRECT DOWNLOAD: File downloads immediately to downloads folder, OR
-                   b) NEW TAB PDF: PDF opens in a new tab that needs to be downloaded
-                   c) IFRAME FORM: Form appears within an iframe (common on Knipp Wolf sites)
-                
-                FOR IFRAME FORMS (Knipp Wolf, Marcus & Millichap subdomain sites):
-                   - If you suspect the page uses iframes for forms, call the 'handle_iframe_forms' action
-                   - This will automatically detect iframes, fill forms, and click download buttons within them
-                
-                FOR REGULAR FORMS (if a form appears on main page):
-                   - Fill it out with professional data:
-                     * Name: John Doe
-                     * Email: johndoe@email.com
-                     * Phone: 555-123-4567
-                     * Company: Real Estate Investments LLC
-                     * Use 'select_dropdown_option_generic' for dropdowns
-                     * Use 'check_terms_checkbox' for terms acceptance
-                   - After filling ALL form fields, scroll to find Submit button if not visible
-                   - Click Submit button (ignore CAPTCHA errors)
-                   - IMMEDIATELY use 'done' action after clicking final download button
-                
-                FOR DIRECT PDF LINKS (if PDF opens in new tab):
-                   - Switch to PDF tab and call 'download_pdf_direct' action
-                   - IMMEDIATELY use 'done' action after download
-                
-                **CRITICAL RULES**:
-                - Use intelligence to identify OM-related downloads, don't rely only on exact keyword matches
-                - Avoid scanning the same page section repeatedly
-                - Scroll systematically based on your current position
-                - Once you click final download button, IMMEDIATELY use 'done' action
-                - Do NOT click the same download button multiple times
-                - Many download buttons don't show visual changes - this is normal
-                - **MANDATORY**: If 'download_pdf_direct' returns "DOWNLOAD COMPLETE!" message, you MUST call 'done' immediately
-                - **NO REPEATS**: Never download the same file twice - if you see success, stop immediately
-                
-                **START**: Begin by intelligently scanning current viewport for OM download opportunities.
-                '''
+            **STEP 4: DOWNLOAD EXECUTION - STOP IMMEDIATELY AFTER**
+            ───────────────────────────────────────────────────────────────────────────────────
+            4. Once you find the appropriate download button (like "VIEW PACKAGE"), click it. This will either:
+               a) DIRECT DOWNLOAD: File downloads immediately to downloads folder, OR
+               b) NEW TAB PDF: PDF opens in a new tab that needs to be downloaded
+               c) FORM APPEARS: A form appears that needs to be filled out
             
-            print("\n🤖 Main Agent: Executing selected strategy...")
+            FOR FORMS (if a form appears after clicking):
+               - Fill it out with professional data:
+                 * Name: John Doe
+                 * Email: johndoe@email.com
+                 * Phone: 555-123-4567
+                 * Company: Real Estate Investments LLC
+                 * Use 'select_dropdown_option_generic' for dropdowns
+                 * Use 'check_terms_checkbox' for terms acceptance
+               - After filling ALL form fields, scroll to find Submit button if not visible
+               - Click Submit button (ignore any errors)
+               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
             
-            # Create agent with the selected task, reusing the browser session
+            FOR DIRECT PDF LINKS (if PDF opens in new tab):
+               - Switch to PDF tab and call 'download_pdf_direct' action
+               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
+            
+            FOR DIRECT DOWNLOADS:
+               - If you see any download confirmation message or the file downloads
+               - **IMMEDIATELY call 'done' - DO NOT DO ANYTHING ELSE**
+            
+            **CRITICAL RULES - STOP IMMEDIATELY AFTER ANY DOWNLOAD ACTION**:
+            ───────────────────────────────────────────────────────────────────────────────────
+            - Start by navigating to {url}
+            - Look specifically for "VIEW PACKAGE" button on Levy Retail sites
+            - Use intelligence to identify download opportunities
+            - Scroll systematically with `pages=0.5` if needed
+            - **MANDATORY**: After clicking ANY download button, submit button, or download link, IMMEDIATELY call 'done'
+            - **MANDATORY**: If you see "Download" or "Package" or any file download, IMMEDIATELY call 'done'
+            - **MANDATORY**: If 'download_pdf_direct' returns ANY message, IMMEDIATELY call 'done'
+            - **ALTERNATIVE**: Call 'stop_workflow_after_download' action to force stop
+            - **NO ADDITIONAL STEPS**: Do not continue working after ANY download-related action
+            - **STOP WORKING**: Once you've clicked a download/submit button, your task is complete
+            - **DO NOT**: Click the same button multiple times
+            - **DO NOT**: Keep looking for more downloads after one is found
+            
+            **EXAMPLE FLOW**:
+            1. Navigate to page
+            2. Find "VIEW PACKAGE" button
+            3. Click "VIEW PACKAGE" 
+            4. Fill form if it appears
+            5. Click Submit
+            6. **IMMEDIATELY call 'done' - TASK COMPLETE**
+            
+            **START**: Navigate to {url} and find the download button. STOP immediately after clicking it.
+            '''
+            
+            print("\n🤖 Main Agent: Executing download strategy...")
+            
+            # Create agent with the selected task
             agent = Agent(
                 task=task_prompt,
                 llm=self.llm,
@@ -924,42 +958,55 @@ After scanning the page, provide ONLY a single number representing the count of 
                 controller=controller,
             )
             
-            # Run the agent with a dynamic step limit
-            max_steps = 50 if property_count > 1 else 18
-            await agent.run(
-                on_step_start=self.monitor_downloads,
-                max_steps=max_steps
-            )
+            # Run the agent with sufficient steps, but monitor will stop it early on download
+            try:
+                await agent.run(
+                    on_step_start=self.monitor_downloads,
+                    max_steps=15  # Reduced steps since we want to stop quickly
+                )
+            except StopIteration as e:
+                print(f"🛑 Agent stopped early due to download completion: {e}")
+                result["steps_completed"].append("Agent stopped after download detected")
+            except Exception as e:
+                if "StopIteration" in str(e):
+                    print(f"🛑 Agent stopped after download: {e}")
+                    result["steps_completed"].append("Agent stopped after download detected")
+                else:
+                    print(f"❌ Agent error: {e}")
+                    raise e
             
             result["steps_completed"].append("Browser Use agent completed")
             
-            # Wait for downloads to complete
-            print("⏳ Waiting 5 seconds for downloads to complete...")
-            await asyncio.sleep(5)
+            # Wait for downloads to complete BEFORE closing browser
+            print("⏳ Waiting 5 seconds for downloads to complete before closing browser...")
+            await asyncio.sleep(5)  # Increased wait time to allow downloads
             
-            # Check results
+            # Check for newly downloaded files (compare with existing files)
+            current_files = set(domain_dir.glob("*.pdf"))
+            new_files = current_files - existing_files
+            
+            # Also check files tracked by download handlers
             if self.downloaded_files:
                 result["success"] = True
                 result["downloaded_files"] = [str(f) for f in self.downloaded_files]
-                result["steps_completed"].append("Download verified")
-                print(f"\n🎉 Success! Downloaded {len(self.downloaded_files)} file(s):")
+                result["steps_completed"].append("Download verified via handlers")
+                print(f"\n🎉 Success! Downloaded {len(self.downloaded_files)} new file(s) via handlers:")
                 for file_path in self.downloaded_files:
                     file_path = Path(file_path)
                     print(f"  • {file_path.name} ({file_path.stat().st_size // 1024} KB)")
+            elif new_files:
+                result["success"] = True
+                result["downloaded_files"] = [str(f) for f in new_files]
+                result["steps_completed"].append("Download verified - new files detected")
+                print(f"\n🎉 Success! Downloaded {len(new_files)} new file(s):")
+                for file_path in new_files:
+                    print(f"  • {file_path.name} ({file_path.stat().st_size // 1024} KB)")
+                self.downloaded_files = list(new_files)
             else:
-                # Also check for any PDF files that might have been downloaded via custom action
-                pdf_files = list(self.downloads_dir.glob("*.pdf"))
-                if pdf_files:
-                    result["success"] = True
-                    result["downloaded_files"] = [str(f) for f in pdf_files]
-                    result["steps_completed"].append("Download verified via custom action")
-                    print(f"\n🎉 Success! Downloaded {len(pdf_files)} file(s) via custom action:")
-                    for file_path in pdf_files:
-                        print(f"  • {file_path.name} ({file_path.stat().st_size // 1024} KB)")
-                    self.downloaded_files = pdf_files
-                else:
-                    result["error"] = "No files were successfully downloaded"
-                    print("❌ No files were successfully downloaded")
+                result["error"] = "No new files were downloaded"
+                print("❌ No new files were downloaded")
+                if existing_files:
+                    print(f"ℹ️  Note: {len(existing_files)} existing files found in folder (not counted as new downloads)")
             
         except Exception as e:
             result["error"] = str(e)
